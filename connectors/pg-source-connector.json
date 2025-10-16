@@ -1,0 +1,27 @@
+{
+  "name": "pg-source-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "topic.prefix": "ridehailing",
+    "database.hostname": "postgres-source",
+    "database.port": "5432",
+    "database.user": "user",
+    "database.password": "password",
+    "database.dbname": "ride_hailing_db",
+    "schema.include.list": "public",
+    "table.include.list": "public.booking,public.driver_location",
+    "plugin.name": "pgoutput",
+    "publication.autocreate.mode": "filtered",
+    "slot.name": "debezium_slot",
+    "slot.drop.on.stop": "true",
+    "tombstones.on.delete": "false",
+    "include.schema.changes": "false",
+    "binary.handling.mode": "base64",
+    "time.precision.mode": "adaptive_time_microseconds",
+    "heartbeat.interval.ms": "10000",
+    "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "key.converter.schemas.enable": "false",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter.schemas.enable": "false"
+  }
+}
