@@ -1,52 +1,3 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
-# ================= CẤU HÌNH NHANH =================
-FLINK_MAIN_CLASS="${FLINK_MAIN_CLASS:-com.ridehailing.RideHailingDataProcessor}"
-CONNECTOR_NAME="${CONNECTOR_NAME:-pg-source-connector}"
-ES_INDEX="${ES_INDEX:-driver_locations}"
-
-RUN_GENERATOR="${RUN_GENERATOR:-false}"     # true/false
-GENERATOR_SECONDS="${GENERATOR_SECONDS:-0}" # >0: tự dừng generator sau N giây
-# ================================================
-
-ROOT="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )"
-cd "$ROOT"
-
-info(){ echo -e "[\033[1;34mINFO\033[0m] $*"; }
-ok(){   echo -e "[\033[1;32m OK \033[0m] $*"; }
-err(){  echo -e "[\033[1;31mFAIL\033[0m] $*" 1>&2; }
-
-wait_for_log(){
-  local container="$1" pattern="$2" timeout="${3:-120}"
-  local start="$(date +%s)"
-  info "Đợi $container (pattern: $pattern)..."
-  until docker logs "$container" 2>&1 | grep -q "$pattern"; do
-    sleep 2
-    (( $(date +%s) - start > timeout )) && { err "Timeout đợi $container"; return 1; }
-  done
-  ok "$container sẵn sàng"
-}
-
-wait_for_http(){
-  local url="$1" timeout="${2:-120}"
-  local start="$(date +%s)"
-  info "Đợi HTTP $url ..."
-  until curl -sSf "$url" >/dev/null; do
-    sleep 2
-    (( $(date +%s) - start > timeout )) && { err "Timeout đợi $url"; return 1; }
-  done
-  ok "$url OK"
-}
-
-# 0) In thông tin tổng quan
-info "Thư mục làm việc: $ROOT"
-info "Main class: $FLINK_MAIN_CLASS"
-info "Connector:  $CONNECTOR_NAME"
-info "ES index:   $ES_INDEX"
-
-# 1) HẠ TOÀN BỘ STACK + XOÁ VOLUMES (RESET SẠCH)
-info "docker compose down -v ..."
 docker compose down -v || true
 ok "Đã down -v"
 
@@ -72,9 +23,37 @@ curl -s -X PUT "http://localhost:9200/${ES_INDEX}" \
     "mappings": { "properties": {
       "driverId":    { "type": "keyword" },
       "availability":{ "type": "keyword" },
+      "serviceType": { "type": "keyword" },
+      "serviceTier": { "type": "keyword" },
+      "areaCode":    { "type": "keyword" },
       "@timestamp":  { "type": "date"    },
       "location":    { "type": "geo_point" }
     } }
+  }' >/dev/null
+
+# Tạo index template cho timeseries driver_locations_timeseries-*
+info "Tạo index template cho driver_locations_timeseries-* ..."
+curl -s -X PUT "http://localhost:9200/_index_template/driver_locations_timeseries" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "index_patterns": ["driver_locations_timeseries-*"] ,
+    "template": {
+      "settings": {
+        "number_of_shards": 1,
+        "number_of_replicas": 0
+      },
+      "mappings": {
+        "properties": {
+          "driverId":    { "type": "keyword" },
+          "availability":{ "type": "keyword" },
+          "serviceType": { "type": "keyword" },
+          "serviceTier": { "type": "keyword" },
+          "areaCode":    { "type": "keyword" },
+          "@timestamp":  { "type": "date"    },
+          "location":    { "type": "geo_point" }
+        }
+      }
+    }
   }' >/dev/null
 ok "Mapping ES đã sẵn sàng"
 
@@ -101,27 +80,7 @@ mvn -U -DskipTests clean package
 popd >/dev/null
 HOST_JAR="$(ls -1t "$ROOT/flink-job/target/"*.jar 2>/dev/null | head -n1 || true)"
 [[ -n "$HOST_JAR" ]] || { err "Không tìm thấy JAR trong flink-job/target. Build có thể fail."; exit 1; }
-ok "Build xong: $(basename "$HOST_JAR")"
-
-info "Khởi động Flink JM/TM..."
-docker compose up -d flink-jobmanager flink-taskmanager
-
-# đợi JobManager ổn định
-info "Chờ JobManager ổn định..."
-for i in {1..30}; do
-  if docker inspect -f '{{.State.Running}} {{.State.Restarting}}' flink-jobmanager 2>/dev/null | grep -q '^true false$'; then
-    break
-  fi
-  sleep 1
-done
-
-# tạo thư mục usrlib và set quyền
-info "Chuẩn bị /opt/flink/usrlib..."
-docker exec -i flink-jobmanager sh -lc 'mkdir -p /opt/flink/usrlib && chown -R flink:flink /opt/flink/usrlib'
-
-# copy JAR vào usrlib
-HOST_JAR="${HOST_JAR:?missing host jar}"
-JAR_BASENAME="$(basename "$HOST_JAR")"
+@@ -125,58 +153,79 @@ JAR_BASENAME="$(basename "$HOST_JAR")"
 JAR_IN_CONTAINER="/opt/flink/usrlib/${JAR_BASENAME}"
 
 info "Copy JAR vào $JAR_IN_CONTAINER ..."
@@ -147,7 +106,8 @@ docker exec -i flink-jobmanager flink run -d -c "${FLINK_MAIN_CLASS}" "${JAR_IN_
   || { err "Submit job thất bại. Kiểm tra lại $JAR_IN_CONTAINER"; exit 1; }
 
 docker exec -i flink-jobmanager flink list
-ok "Đã submit Flink job thành công"docker exec -it kafka kafka-console-consumer --bootstrap-server kafka:19092 \
+ok "Đã submit Flink job thành công"
+docker exec -it kafka kafka-console-consumer --bootstrap-server kafka:19092 \
   --topic ridehailing.public.booking --from-beginning --max-messages 3
 
 # 9) (TUỲ CHỌN) CHẠY DATA GENERATOR
@@ -169,14 +129,34 @@ info "Kiểm tra nhanh Elasticsearch..."
 curl -s "http://localhost:9200/${ES_INDEX}/_count" && echo
 curl -s "http://localhost:9200/${ES_INDEX}/_search?size=1" | sed -n '1,120p' || true
 
-if command -v psql >/dev/null 2>&1; then
-  info "Kiểm tra nhanh Reporting (latest KPI + fact phút)..."
-  psql "host=localhost port=5433 dbname=reporting_db user=user password=password" \
-    -c "SELECT * FROM mart.latest_kpi_by_scope ORDER BY last_updated DESC LIMIT 10;" || true
-  psql "host=localhost port=5433 dbname=reporting_db user=user password=password" \
-    -c "SELECT bucket_start, service_type, service_tier, area_code, \
-               requests_total, accepted_total, completed_total, canceled_total, gmv_total \
-        FROM mart.fact_trip_minute ORDER BY bucket_start DESC LIMIT 20;" || true
-fi
+run_reporting_query(){
+  local sql="$1"
+  local host_conn_failed=false
+
+  if command -v psql >/dev/null 2>&1; then
+    if PGPASSWORD=password psql "host=localhost port=5433 dbname=reporting_db user=user" -c "$sql"; then
+      return 0
+    else
+      host_conn_failed=true
+      info "Kết nối localhost:5433 thất bại, thử chạy psql trong container..."
+    fi
+  fi
+
+  if command -v docker >/dev/null 2>&1; then
+    PGPASSWORD=password docker exec -i postgres-reporting psql -U user -d reporting_db -c "$sql" || {
+      $host_conn_failed || err "Không thể chạy truy vấn báo cáo";
+      return 1
+    }
+  elif ! $host_conn_failed; then
+    err "psql không tồn tại và không thể dùng docker exec để truy vấn báo cáo"
+    return 1
+  else
+    return 1
+  fi
+}
+
+info "Kiểm tra nhanh Reporting (latest KPI + fact phút)..."
+run_reporting_query "SELECT metric_name, service_type, service_tier, area_code, metric_value, numerator_value, denominator_value, last_updated FROM mart.latest_metric_snapshot ORDER BY last_updated DESC LIMIT 10;" || true
+run_reporting_query "SELECT bucket_start, bucket_granularity, metric_name, service_type, service_tier, area_code, metric_value, numerator_value, denominator_value, sample_size FROM mart.fact_metric_bucket WHERE bucket_granularity = 'MINUTE' ORDER BY bucket_start DESC LIMIT 20;" || true
 
 ok "DONE — Flink UI: http://localhost:8081   |   Kibana: http://localhost:5601"
