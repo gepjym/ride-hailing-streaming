@@ -94,6 +94,33 @@ wait_for_topics(){
   done
 }
 
+wait_for_kafka_brokers(){
+  local timeout="${1:-180}"
+  local start="$(date +%s)"
+
+  # Đảm bảo cả 3 broker đã được khởi động/không bị pause
+  for b in kafka-1 kafka-2 kafka-3; do
+    ensure_running "$b"
+  done
+
+  info "Đợi Kafka brokers sẵn sàng ..."
+  while true; do
+    ensure_running "$KAFKA_CLI_CONTAINER"
+    if docker exec -i "$KAFKA_CLI_CONTAINER" kafka-topics --bootstrap-server "$KAFKA_BOOTSTRAP" --list >/dev/null 2>&1; then
+      ok "Kafka brokers đã sẵn sàng"
+      return 0
+    fi
+
+    if (( $(date +%s) - start > timeout )); then
+      err "Timeout đợi Kafka brokers sẵn sàng"
+      docker logs "$KAFKA_CLI_CONTAINER" | tail -n 80 >&2 || true
+      return 1
+    fi
+
+    sleep 3
+  done
+}
+
 # 0) In thông tin tổng quan
 info "Thư mục làm việc: $ROOT"
 info "Main class: $FLINK_MAIN_CLASS"
@@ -193,6 +220,7 @@ docker compose up -d
 ok "Đã up -d"
 
 # 3) CHỜ CÁC DỊCH VỤ SẴN SÀNG
+wait_for_kafka_brokers 240
 wait_for_postgres postgres-source    "ride_hailing_db" "user" 240
 wait_for_postgres postgres-reporting "reporting_db"   "user" 240
 
