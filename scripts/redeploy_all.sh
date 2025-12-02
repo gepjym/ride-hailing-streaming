@@ -17,7 +17,7 @@ GENERATOR_PGPORT="${GENERATOR_PGPORT:-5432}"
 GENERATOR_PGDB="${GENERATOR_PGDB:-ride_hailing_db}"
 GENERATOR_PGUSER="${GENERATOR_PGUSER:-user}"
 GENERATOR_PGPASSWORD="${GENERATOR_PGPASSWORD:-password}"
-KAFKA_BOOTSTRAP="${KAFKA_BOOTSTRAP:-kafka-1:19092,kafka-2:19092,kafka-3:19092}"
+KAFKA_BOOTSTRAP="${KAFKA_BOOTSTRAP:-kafka-1:19092}"
 KAFKA_CLI_CONTAINER="${KAFKA_CLI_CONTAINER:-kafka-1}"
 ES_USERNAME="${ES_USERNAME:-elastic}"
 ES_PASSWORD="${ELASTIC_PASSWORD:-changeme123}"
@@ -136,8 +136,7 @@ detect_kafka_topics_bin(){
 }
 
 kafka_cli_pick_running(){
-  # Chọn broker đang RUNNING để dùng kafka-topics. Ưu tiên kafka-1, sau đó kafka-2, kafka-3.
-  local candidates=(kafka-1 kafka-2 kafka-3)
+  local candidates=("${KAFKA_CLI_CONTAINER}" kafka-1 kafka)
   for c in "${candidates[@]}"; do
     if docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null | grep -q true; then
       KAFKA_CLI_CONTAINER="$c"
@@ -146,16 +145,13 @@ kafka_cli_pick_running(){
     fi
   done
 
-  # Nếu chưa container nào RUNNING, thử khởi động kafka-1 rồi kiểm tra lại
-  ensure_running kafka-1 || true
-  if docker inspect -f '{{.State.Running}}' kafka-1 2>/dev/null | grep -q true; then
-    KAFKA_CLI_CONTAINER="kafka-1"
-    export KAFKA_CLI_CONTAINER
+  ensure_running "$KAFKA_CLI_CONTAINER" || true
+  if docker inspect -f '{{.State.Running}}' "$KAFKA_CLI_CONTAINER" 2>/dev/null | grep -q true; then
     return 0
   fi
 
-  err "Không tìm thấy broker Kafka nào đang RUNNING (kafka-1/2/3)"
-  docker compose ps kafka-1 kafka-2 kafka-3 || true
+  err "Không tìm thấy broker Kafka nào đang RUNNING"
+  docker compose ps kafka-1 kafka || true
   return 1
 }
 
@@ -209,22 +205,18 @@ wait_for_kafka_brokers(){
   local timeout="${1:-180}"
   local start="$(date +%s)"
 
-  # Đảm bảo cả 3 broker đã được khởi động/không bị pause
-  for b in kafka-1 kafka-2 kafka-3; do
-    ensure_running "$b" || true
-  done
-
-  info "Đợi Kafka brokers sẵn sàng ..."
+  ensure_running "$KAFKA_CLI_CONTAINER" || true
+  info "Đợi Kafka broker sẵn sàng ..."
   while true; do
     kafka_cli_pick_running || true
     ensure_running "$KAFKA_CLI_CONTAINER" || true
     if kafka_topics --list >/dev/null 2>&1; then
-      ok "Kafka brokers đã sẵn sàng"
+      ok "Kafka broker đã sẵn sàng"
       return 0
     fi
 
     if (( $(date +%s) - start > timeout )); then
-      err "Timeout đợi Kafka brokers sẵn sàng"
+      err "Timeout đợi Kafka broker sẵn sàng"
       docker logs "$KAFKA_CLI_CONTAINER" | tail -n 80 >&2 || true
       return 1
     fi
@@ -244,7 +236,7 @@ ensure_topic(){
       ok "Topic '${topic}' đã tồn tại"
       return 0
     fi
-    if kafka_topics --create --if-not-exists --topic "$topic" --partitions 3 --replication-factor 3 >/dev/null 2>&1; then
+    if kafka_topics --create --if-not-exists --topic "$topic" --partitions 3 --replication-factor 1 >/dev/null 2>&1; then
       ok "Topic '${topic}' đã tạo"
       return 0
     fi
@@ -385,19 +377,6 @@ if ! curl -s http://localhost:8083/connector-plugins | grep -q 'io.debezium.conn
   err "Kafka Connect chưa có plugin Debezium Postgres (io.debezium.connector.postgresql.PostgresConnector). Kiểm tra lại image/CONNECT_PLUGIN_PATH."
   exit 1
 fi
-
-# validate cấu hình trước khi tạo
-info "Validate cấu hình Debezium (no-op)..."
-validate_resp="$(curl -s -w '\n%{http_code}' -X PUT "http://localhost:8083/connector-plugins/io.debezium.connector.postgresql.PostgresConnector/config/validate" \
-  -H 'Content-Type: application/json' \
-  --data @"${CONNECTOR_FILE_CANDIDATE}")"
-validate_body="$(printf '%s' "$validate_resp" | sed '$d')"
-validate_code="$(printf '%s' "$validate_resp" | tail -n1)"
-echo "[DEBUG] VALIDATE => HTTP $validate_code"; echo "$validate_body" | sed -n '1,120p'
-if [[ "$validate_code" != "200" ]]; then
-  err "Validate connector thất bại (HTTP $validate_code)."; exit 1; fi
-if echo "$validate_body" | grep -q '"errors"[[:space:]]*:[[:space:]]*\[[^]]*[^ ]\]'; then
-  err "Validate connector có lỗi, kiểm tra log trên."; exit 1; fi
 
 # đăng ký connector và kiểm tra mã HTTP
 resp="$(curl -s -w '\n%{http_code}' -X POST "http://localhost:8083/connectors" \

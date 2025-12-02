@@ -62,7 +62,7 @@ public class RideHailingDataProcessor {
     // Kafka
     static final String KAFKA_BOOTSTRAP = System.getenv().getOrDefault(
             "KAFKA_BOOTSTRAP",
-            "kafka-1:19092,kafka-2:19092,kafka-3:19092");
+            "kafka-1:19092");
     static final String TOPIC_BOOKING = "ridehailing.public.booking";
     static final String TOPIC_DRIVER_LOCATION = "ridehailing.public.driver_location";
     static final String TOPIC_PASSENGER = "ridehailing.public.passenger";

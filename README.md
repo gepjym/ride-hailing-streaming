@@ -38,7 +38,7 @@ bash scripts/redeploy_all.sh
 
 > Script sẽ tự tạo Elasticsearch index `driver_locations`, template `driver_locations_timeseries-*` **và** data view (index pattern) tương ứng trong Kibana (`driver_locations` và `driver_locations_timeseries-*`). Sau khi chạy xong bạn có thể mở Kibana → *Stack Management → Data Views* để xác nhận đã có 2 data view sẵn sàng cho việc dựng map/dashboard.
 
-> Hạ tầng mặc định chạy cụm Kafka 3 broker (`kafka-1`..`kafka-3`) kèm Schema Registry (mặc định bind ra host `18081`). Elasticsearch đã bật security (basic auth), user mặc định `elastic` với mật khẩu lấy từ biến môi trường `ELASTIC_PASSWORD` (mặc định `changeme123`); Kibana được cấu hình sẵn để kết nối bằng tài khoản này.
+> Hạ tầng mặc định chạy một Kafka broker (`kafka-1` trên cổng 19092) cùng Debezium Connect. Elasticsearch đã bật security (basic auth), user mặc định `elastic` với mật khẩu lấy từ biến môi trường `ELASTIC_PASSWORD` (mặc định `changeme123`); Kibana được cấu hình sẵn để kết nối bằng tài khoản này.
 
 ### 2. Kịch bản thủ công từng bước
 
@@ -121,7 +121,7 @@ Các luồng realtime (Ops) và báo cáo (reporting_db) đã hoạt động đ�
    * Thu thập metrics qua Prometheus/Grafana (Flink REST exporter, Kafka consumer lag, JVM/CPU/RAM) và rule cảnh báo: lag vượt ngưỡng, match/cancel rate tụt, 5xx tăng.
 
 5. **Bảo mật & HA Kafka**
-   * Bật X-Pack auth cho Elasticsearch/Kibana; thêm Schema Registry và cụm Kafka 3 broker (replication ≥3, topic.creation.* tương ứng); cấu hình TLS/RBAC nếu triển khai thực tế.
+* Bật X-Pack auth cho Elasticsearch/Kibana; nếu cần HA có thể mở rộng lên Schema Registry và cụm Kafka 3 broker (replication ≥3, topic.creation.* tương ứng); cấu hình TLS/RBAC nếu triển khai thực tế.
 
 6. **Cohort/Retention batch**
    * Job/batch hàng ngày tính cohort rider/driver, retention/churn/return theo t-1/t-3 và productivity Trips/Driver/Day để phục vụ dashboard NRT.
