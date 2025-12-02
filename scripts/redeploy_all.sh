@@ -135,7 +135,32 @@ detect_kafka_topics_bin(){
   return 1
 }
 
+kafka_cli_pick_running(){
+  # Chọn broker đang RUNNING để dùng kafka-topics. Ưu tiên kafka-1, sau đó kafka-2, kafka-3.
+  local candidates=(kafka-1 kafka-2 kafka-3)
+  for c in "${candidates[@]}"; do
+    if docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null | grep -q true; then
+      KAFKA_CLI_CONTAINER="$c"
+      export KAFKA_CLI_CONTAINER
+      return 0
+    fi
+  done
+
+  # Nếu chưa container nào RUNNING, thử khởi động kafka-1 rồi kiểm tra lại
+  ensure_running kafka-1 || true
+  if docker inspect -f '{{.State.Running}}' kafka-1 2>/dev/null | grep -q true; then
+    KAFKA_CLI_CONTAINER="kafka-1"
+    export KAFKA_CLI_CONTAINER
+    return 0
+  fi
+
+  err "Không tìm thấy broker Kafka nào đang RUNNING (kafka-1/2/3)"
+  docker compose ps kafka-1 kafka-2 kafka-3 || true
+  return 1
+}
+
 kafka_topics(){
+  kafka_cli_pick_running || return 1
   ensure_running "$KAFKA_CLI_CONTAINER" || return 1
   if [[ -z "${KAFKA_TOPICS_BIN:-}" ]]; then
     detect_kafka_topics_bin || return 1
@@ -186,12 +211,13 @@ wait_for_kafka_brokers(){
 
   # Đảm bảo cả 3 broker đã được khởi động/không bị pause
   for b in kafka-1 kafka-2 kafka-3; do
-    ensure_running "$b"
+    ensure_running "$b" || true
   done
 
   info "Đợi Kafka brokers sẵn sàng ..."
   while true; do
-    ensure_running "$KAFKA_CLI_CONTAINER"
+    kafka_cli_pick_running || true
+    ensure_running "$KAFKA_CLI_CONTAINER" || true
     if kafka_topics --list >/dev/null 2>&1; then
       ok "Kafka brokers đã sẵn sàng"
       return 0
@@ -211,6 +237,7 @@ ensure_topic(){
   local topic="$1"
   local attempts=0
   info "Đảm bảo Kafka topic '${topic}' tồn tại..."
+  kafka_cli_pick_running || return 1
   ensure_running "$KAFKA_CLI_CONTAINER" || return 1
   while true; do
     if kafka_topics --describe --topic "$topic" >/dev/null 2>&1; then
@@ -222,6 +249,7 @@ ensure_topic(){
       return 0
     fi
     # nếu broker vừa khởi động lại hoặc bị stop, thử ensure_running lại trước khi retry
+    kafka_cli_pick_running || true
     ensure_running "$KAFKA_CLI_CONTAINER" || true
     if (( attempts++ >= 30 )); then
       err "Không thể tạo topic '${topic}'"
@@ -354,16 +382,29 @@ if [[ ! -f "$CONNECTOR_FILE" ]]; then
   fi
 fi
 
-curl -s -X POST "http://localhost:8083/connectors" \
+resp_file="$(mktemp)"
+http_code=$(curl -s -o "$resp_file" -w '%{http_code}' -X POST "http://localhost:8083/connectors" \
   -H 'Content-Type: application/json' \
-  --data @"${CONNECTOR_FILE}" >/dev/null
+  --data @"${CONNECTOR_FILE}")
+if [[ "$http_code" -ge 300 || "$http_code" -lt 200 ]]; then
+  err "Đăng ký connector thất bại (HTTP $http_code)";
+  cat "$resp_file" >&2 || true
+  docker compose logs --tail=120 kafka-connect >&2 || true
+  exit 1
+fi
 
-sleep 2
-status_json="$(curl -s "http://localhost:8083/connectors/${CONNECTOR_NAME}/status")"
-echo "$status_json" | sed -n '1,120p'
-if echo "$status_json" | grep -q '"state"[[:space:]]*:[[:space:]]*"RUNNING"'; then
-  ok "Connector RUNNING"
-else
+# chờ connector vào trạng thái RUNNING
+for attempt in {1..20}; do
+  status_json="$(curl -s "http://localhost:8083/connectors/${CONNECTOR_NAME}/status" || true)"
+  echo "$status_json" | sed -n '1,80p'
+  if echo "$status_json" | grep -q '"state"[[:space:]]*:[[:space:]]*"RUNNING"'; then
+    ok "Connector RUNNING"
+    break
+  fi
+  sleep 3
+done
+
+if ! echo "$status_json" | grep -q '"state"[[:space:]]*:[[:space:]]*"RUNNING"'; then
   err "Connector chưa RUNNING (hoặc chưa tạo). Kiểm tra log kafka-connect."
   docker compose logs --tail=120 kafka-connect >&2 || true
   exit 1
