@@ -386,6 +386,19 @@ if ! curl -s http://localhost:8083/connector-plugins | grep -q 'io.debezium.conn
   exit 1
 fi
 
+# validate cấu hình trước khi tạo
+info "Validate cấu hình Debezium (no-op)..."
+validate_resp="$(curl -s -w '\n%{http_code}' -X PUT "http://localhost:8083/connector-plugins/io.debezium.connector.postgresql.PostgresConnector/config/validate" \
+  -H 'Content-Type: application/json' \
+  --data @"${CONNECTOR_FILE_CANDIDATE}")"
+validate_body="$(printf '%s' "$validate_resp" | sed '$d')"
+validate_code="$(printf '%s' "$validate_resp" | tail -n1)"
+echo "[DEBUG] VALIDATE => HTTP $validate_code"; echo "$validate_body" | sed -n '1,120p'
+if [[ "$validate_code" != "200" ]]; then
+  err "Validate connector thất bại (HTTP $validate_code)."; exit 1; fi
+if echo "$validate_body" | grep -q '"errors"[[:space:]]*:[[:space:]]*\[[^]]*[^ ]\]'; then
+  err "Validate connector có lỗi, kiểm tra log trên."; exit 1; fi
+
 # đăng ký connector và kiểm tra mã HTTP
 resp="$(curl -s -w '\n%{http_code}' -X POST "http://localhost:8083/connectors" \
   -H 'Content-Type: application/json' \
