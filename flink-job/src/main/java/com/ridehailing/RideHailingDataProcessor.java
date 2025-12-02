@@ -203,7 +203,7 @@ public class RideHailingDataProcessor {
 
         KafkaSource<ObjectNode> bookingSource = KafkaSource.<ObjectNode>builder()
                 .setBootstrapServers(KAFKA_BOOTSTRAP)
-                .setTopicPattern(TOPIC_BOOKING_PATTERN)
+                .setTopics(TOPIC_BOOKING)
                 .setGroupId("flink-booking-realtime")
                 .setStartingOffsets(bookingOffsets)
                 .setPartitionDiscoveryInterval(Duration.ofSeconds(15))
@@ -213,7 +213,7 @@ public class RideHailingDataProcessor {
 
         KafkaSource<ObjectNode> driverLocSource = KafkaSource.<ObjectNode>builder()
                 .setBootstrapServers(KAFKA_BOOTSTRAP)
-                .setTopicPattern(TOPIC_DRIVER_LOC_PATTERN)
+                .setTopics(TOPIC_DRIVER_LOCATION)
                 .setGroupId("flink-driverloc-realtime")
                 .setStartingOffsets(driverLocOffsets)
                 .setPartitionDiscoveryInterval(Duration.ofSeconds(15))
@@ -223,7 +223,7 @@ public class RideHailingDataProcessor {
 
         KafkaSource<ObjectNode> passengerSource = KafkaSource.<ObjectNode>builder()
                 .setBootstrapServers(KAFKA_BOOTSTRAP)
-                .setTopicPattern(TOPIC_PASSENGER_PATTERN)
+                .setTopics(TOPIC_PASSENGER)
                 .setGroupId("flink-passenger-realtime")
                 .setStartingOffsets(passengerOffsets)
                 .setPartitionDiscoveryInterval(Duration.ofSeconds(15))
@@ -233,7 +233,7 @@ public class RideHailingDataProcessor {
 
         KafkaSource<ObjectNode> driverSource = KafkaSource.<ObjectNode>builder()
                 .setBootstrapServers(KAFKA_BOOTSTRAP)
-                .setTopicPattern(TOPIC_DRIVER_PATTERN)
+                .setTopics(TOPIC_DRIVER)
                 .setGroupId("flink-driver-registrations")
                 .setStartingOffsets(driverOffsets)
                 .setPartitionDiscoveryInterval(Duration.ofSeconds(15))
