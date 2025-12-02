@@ -1,6 +1,7 @@
 {
   "name": "pg-source-connector",
   "config": {
+    "tasks.max": "1",
     "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
     "topic.prefix": "ridehailing",
     "database.hostname": "postgres-source",
@@ -26,6 +27,8 @@
     "value.converter.schemas.enable": "false",
     "decimal.handling.mode": "string",
     "snapshot.mode": "initial",
+    "schema.history.internal.kafka.bootstrap.servers": "kafka-1:19092,kafka-2:19092,kafka-3:19092",
+    "schema.history.internal.kafka.topic": "schema-changes.ridehailing",
     "topic.creation.default.replication.factor": "3",
     "topic.creation.default.partitions": "3"
   }

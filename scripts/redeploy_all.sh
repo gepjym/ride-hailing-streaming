@@ -371,25 +371,34 @@ ensure_kibana_index_pattern "driver_locations_timeseries-*" "driver_locations_ti
 
 # 5) ĐĂNG KÝ DEBEZIUM CONNECTOR
 info "Đăng ký Kafka Connect Debezium..."
+
 # Xoá connector cũ (nếu có) cho sạch
 curl -s -X DELETE "http://localhost:8083/connectors/${CONNECTOR_NAME}" >/dev/null 2>&1 || true
-# Đăng ký lại từ file cấu hình
-if [[ ! -f "$CONNECTOR_FILE" ]]; then
-  if [[ -f "pg-source-connector.json" ]]; then
-    CONNECTOR_FILE="pg-source-connector.json"
-  else
-    err "Không tìm thấy file connector JSON (CONNECTOR_FILE=$CONNECTOR_FILE)"; exit 1
-  fi
+
+# tìm file cấu hình (cho phép fallback nếu đổi vị trí)
+CONNECTOR_FILE_CANDIDATE="${CONNECTOR_FILE}"
+[[ -f "$CONNECTOR_FILE_CANDIDATE" ]] || CONNECTOR_FILE_CANDIDATE="pg-source-connector.json"
+[[ -f "$CONNECTOR_FILE_CANDIDATE" ]] || { err "Không tìm thấy file connector JSON (CONNECTOR_FILE=$CONNECTOR_FILE)"; exit 1; }
+
+# kiểm tra plugin Debezium đã có trong Kafka Connect chưa
+if ! curl -s http://localhost:8083/connector-plugins | grep -q 'io.debezium.connector.postgresql.PostgresConnector'; then
+  err "Kafka Connect chưa có plugin Debezium Postgres (io.debezium.connector.postgresql.PostgresConnector). Kiểm tra lại image/CONNECT_PLUGIN_PATH."
+  exit 1
 fi
 
-resp_file="$(mktemp)"
-http_code=$(curl -s -o "$resp_file" -w '%{http_code}' -X POST "http://localhost:8083/connectors" \
+# đăng ký connector và kiểm tra mã HTTP
+resp="$(curl -s -w '\n%{http_code}' -X POST "http://localhost:8083/connectors" \
   -H 'Content-Type: application/json' \
-  --data @"${CONNECTOR_FILE}")
-if [[ "$http_code" -ge 300 || "$http_code" -lt 200 ]]; then
-  err "Đăng ký connector thất bại (HTTP $http_code)";
-  cat "$resp_file" >&2 || true
-  docker compose logs --tail=120 kafka-connect >&2 || true
+  --data @"${CONNECTOR_FILE_CANDIDATE}")"
+body="$(printf '%s' "$resp" | sed '$d')"
+code="$(printf '%s' "$resp" | tail -n1)"
+
+echo "[DEBUG] POST /connectors => HTTP $code"
+echo "$body" | sed -n '1,200p'
+
+if [[ "$code" != "201" ]]; then
+  err "Kafka Connect trả lỗi khi tạo connector (HTTP $code)."
+  docker compose logs --tail=200 kafka-connect >&2 || true
   exit 1
 fi
 
@@ -406,7 +415,7 @@ done
 
 if ! echo "$status_json" | grep -q '"state"[[:space:]]*:[[:space:]]*"RUNNING"'; then
   err "Connector chưa RUNNING (hoặc chưa tạo). Kiểm tra log kafka-connect."
-  docker compose logs --tail=120 kafka-connect >&2 || true
+  docker compose logs --tail=200 kafka-connect >&2 || true
   exit 1
 fi
 
