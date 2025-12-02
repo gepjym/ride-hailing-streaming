@@ -33,10 +33,6 @@ import org.apache.flink.util.OutputTag;
 import org.apache.flink.util.Collector;
 import org.elasticsearch.action.index.IndexRequest;
 import org.elasticsearch.client.Requests;
-import org.apache.http.auth.AuthScope;
-import org.apache.http.auth.UsernamePasswordCredentials;
-import org.apache.http.impl.client.BasicCredentialsProvider;
-import org.apache.http.client.CredentialsProvider;
 
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
@@ -206,8 +202,8 @@ public class RideHailingDataProcessor {
                 .setTopics(TOPIC_BOOKING)
                 .setGroupId("flink-booking-realtime")
                 .setStartingOffsets(bookingOffsets)
-                .setPartitionDiscoveryInterval(Duration.ofSeconds(15))
                 .setProperty("allow.auto.create.topics", "true")
+                .setProperty("partition.discovery.interval.ms", "15000")
                 .setValueOnlyDeserializer(new JsonNodeDeserializationSchema())
                 .build();
 
@@ -216,8 +212,8 @@ public class RideHailingDataProcessor {
                 .setTopics(TOPIC_DRIVER_LOCATION)
                 .setGroupId("flink-driverloc-realtime")
                 .setStartingOffsets(driverLocOffsets)
-                .setPartitionDiscoveryInterval(Duration.ofSeconds(15))
                 .setProperty("allow.auto.create.topics", "true")
+                .setProperty("partition.discovery.interval.ms", "15000")
                 .setValueOnlyDeserializer(new JsonNodeDeserializationSchema())
                 .build();
 
@@ -226,8 +222,8 @@ public class RideHailingDataProcessor {
                 .setTopics(TOPIC_PASSENGER)
                 .setGroupId("flink-passenger-realtime")
                 .setStartingOffsets(passengerOffsets)
-                .setPartitionDiscoveryInterval(Duration.ofSeconds(15))
                 .setProperty("allow.auto.create.topics", "true")
+                .setProperty("partition.discovery.interval.ms", "15000")
                 .setValueOnlyDeserializer(new JsonNodeDeserializationSchema())
                 .build();
 
@@ -236,8 +232,8 @@ public class RideHailingDataProcessor {
                 .setTopics(TOPIC_DRIVER)
                 .setGroupId("flink-driver-registrations")
                 .setStartingOffsets(driverOffsets)
-                .setPartitionDiscoveryInterval(Duration.ofSeconds(15))
                 .setProperty("allow.auto.create.topics", "true")
+                .setProperty("partition.discovery.interval.ms", "15000")
                 .setValueOnlyDeserializer(new JsonNodeDeserializationSchema())
                 .build();
 
@@ -445,7 +441,6 @@ public class RideHailingDataProcessor {
                         .source(doc);
                     indexer.add(req);
                 });
-        configureElasticAuth(latestSink);
         enrichedDriverLocs.sinkTo(latestSink.build());
 
         Elasticsearch7SinkBuilder<DriverLocDoc> timeseriesSink = new Elasticsearch7SinkBuilder<DriverLocDoc>()
@@ -469,7 +464,6 @@ public class RideHailingDataProcessor {
                         .source(doc);
                     indexer.add(req);
                 });
-        configureElasticAuth(timeseriesSink);
         enrichedDriverLocs.sinkTo(timeseriesSink.build());
 
         bookingRouteSegments.addSink(JdbcSink.sink(
@@ -1029,13 +1023,6 @@ public class RideHailingDataProcessor {
     }
     static String nvl(String s) { return s == null ? "" : s; }
     static double safe(Double d) { return d == null ? 0.0 : d; }
-    static <T> void configureElasticAuth(Elasticsearch7SinkBuilder<T> builder) {
-        CredentialsProvider credentialsProvider = new BasicCredentialsProvider();
-        credentialsProvider.setCredentials(AuthScope.ANY, new UsernamePasswordCredentials(ES_USERNAME, ES_PASSWORD));
-        builder.setRestClientFactory(restClientBuilder -> restClientBuilder
-                .setHttpClientConfigCallback(httpClientBuilder -> httpClientBuilder
-                        .setDefaultCredentialsProvider(credentialsProvider)));
-    }
     static OffsetsInitializer offsetsInitializer(String envVar, String defaultMode) {
         String configured = envVar != null ? System.getenv(envVar) : null;
         String resolved = (configured == null || configured.trim().isEmpty())
