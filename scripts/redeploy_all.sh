@@ -169,7 +169,9 @@ ensure_running(){
       sleep 2
       # quay vòng kiểm tra lại
       if (( $(date +%s) - start_ts > 120 )); then
-        err "Container $container không thể khởi động sau 120s"; return 1
+        err "Container $container không thể khởi động sau 120s";
+        docker logs "$container" | tail -n 80 >&2 || true
+        return 1
       fi
       continue
     fi
@@ -183,7 +185,7 @@ ensure_topic(){
   local topic="$1"
   local attempts=0
   info "Đảm bảo Kafka topic '${topic}' tồn tại..."
-  ensure_running "$KAFKA_CLI_CONTAINER"
+  ensure_running "$KAFKA_CLI_CONTAINER" || return 1
   while true; do
     if docker exec -i "$KAFKA_CLI_CONTAINER" kafka-topics --bootstrap-server "$KAFKA_BOOTSTRAP" --describe --topic "$topic" >/dev/null 2>&1; then
       ok "Topic '${topic}' đã tồn tại"
@@ -193,6 +195,8 @@ ensure_topic(){
       ok "Topic '${topic}' đã tạo"
       return 0
     fi
+    # nếu broker vừa khởi động lại hoặc bị stop, thử ensure_running lại trước khi retry
+    ensure_running "$KAFKA_CLI_CONTAINER" || true
     if (( attempts++ >= 30 )); then
       err "Không thể tạo topic '${topic}'"
       docker exec -i "$KAFKA_CLI_CONTAINER" kafka-topics --bootstrap-server "$KAFKA_BOOTSTRAP" --list || true
