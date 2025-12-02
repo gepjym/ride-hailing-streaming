@@ -17,8 +17,8 @@ GENERATOR_PGPORT="${GENERATOR_PGPORT:-5432}"
 GENERATOR_PGDB="${GENERATOR_PGDB:-ride_hailing_db}"
 GENERATOR_PGUSER="${GENERATOR_PGUSER:-user}"
 GENERATOR_PGPASSWORD="${GENERATOR_PGPASSWORD:-password}"
-KAFKA_BOOTSTRAP="${KAFKA_BOOTSTRAP:-kafka-1:19092}"
-KAFKA_CLI_CONTAINER="${KAFKA_CLI_CONTAINER:-kafka-1}"
+KAFKA_BOOTSTRAP="${KAFKA_BOOTSTRAP:-kafka:19092,kafka-1:19092}"
+KAFKA_CLI_CONTAINER="${KAFKA_CLI_CONTAINER:-kafka}"
 ES_USERNAME="${ES_USERNAME:-elastic}"
 ES_PASSWORD="${ELASTIC_PASSWORD:-changeme123}"
 # kafka-topics binary will be auto-detected (Confluent vs Bitnami)
@@ -136,7 +136,7 @@ detect_kafka_topics_bin(){
 }
 
 kafka_cli_pick_running(){
-  local candidates=("${KAFKA_CLI_CONTAINER}" kafka-1 kafka)
+  local candidates=("${KAFKA_CLI_CONTAINER}" kafka kafka-1)
   for c in "${candidates[@]}"; do
     if docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null | grep -q true; then
       KAFKA_CLI_CONTAINER="$c"
