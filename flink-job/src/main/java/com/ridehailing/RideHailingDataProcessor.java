@@ -197,45 +197,10 @@ public class RideHailingDataProcessor {
         OffsetsInitializer passengerOffsets = offsetsInitializer("FLINK_PASSENGER_OFFSET_MODE", "LATEST");
         OffsetsInitializer driverOffsets = offsetsInitializer("FLINK_DRIVER_OFFSET_MODE", "LATEST");
 
-        KafkaSource<ObjectNode> bookingSource = KafkaSource.<ObjectNode>builder()
-                .setBootstrapServers(KAFKA_BOOTSTRAP)
-                .setTopics(TOPIC_BOOKING)
-                .setGroupId("flink-booking-realtime")
-                .setStartingOffsets(bookingOffsets)
-                .setProperty("allow.auto.create.topics", "true")
-                .setProperty("partition.discovery.interval.ms", "15000")
-                .setValueOnlyDeserializer(new JsonNodeDeserializationSchema())
-                .build();
-
-        KafkaSource<ObjectNode> driverLocSource = KafkaSource.<ObjectNode>builder()
-                .setBootstrapServers(KAFKA_BOOTSTRAP)
-                .setTopics(TOPIC_DRIVER_LOCATION)
-                .setGroupId("flink-driverloc-realtime")
-                .setStartingOffsets(driverLocOffsets)
-                .setProperty("allow.auto.create.topics", "true")
-                .setProperty("partition.discovery.interval.ms", "15000")
-                .setValueOnlyDeserializer(new JsonNodeDeserializationSchema())
-                .build();
-
-        KafkaSource<ObjectNode> passengerSource = KafkaSource.<ObjectNode>builder()
-                .setBootstrapServers(KAFKA_BOOTSTRAP)
-                .setTopics(TOPIC_PASSENGER)
-                .setGroupId("flink-passenger-realtime")
-                .setStartingOffsets(passengerOffsets)
-                .setProperty("allow.auto.create.topics", "true")
-                .setProperty("partition.discovery.interval.ms", "15000")
-                .setValueOnlyDeserializer(new JsonNodeDeserializationSchema())
-                .build();
-
-        KafkaSource<ObjectNode> driverSource = KafkaSource.<ObjectNode>builder()
-                .setBootstrapServers(KAFKA_BOOTSTRAP)
-                .setTopics(TOPIC_DRIVER)
-                .setGroupId("flink-driver-registrations")
-                .setStartingOffsets(driverOffsets)
-                .setProperty("allow.auto.create.topics", "true")
-                .setProperty("partition.discovery.interval.ms", "15000")
-                .setValueOnlyDeserializer(new JsonNodeDeserializationSchema())
-                .build();
+        KafkaSource<ObjectNode> bookingSource = kafkaSource("flink-booking-realtime", TOPIC_BOOKING, bookingOffsets);
+        KafkaSource<ObjectNode> driverLocSource = kafkaSource("flink-driverloc-realtime", TOPIC_DRIVER_LOCATION, driverLocOffsets);
+        KafkaSource<ObjectNode> passengerSource = kafkaSource("flink-passenger-realtime", TOPIC_PASSENGER, passengerOffsets);
+        KafkaSource<ObjectNode> driverSource = kafkaSource("flink-driver-registrations", TOPIC_DRIVER, driverOffsets);
 
         WatermarkStrategy<ObjectNode> watermarkStrategy = watermarkByUpdatedAt();
 
@@ -1023,6 +988,19 @@ public class RideHailingDataProcessor {
     }
     static String nvl(String s) { return s == null ? "" : s; }
     static double safe(Double d) { return d == null ? 0.0 : d; }
+
+    static KafkaSource<ObjectNode> kafkaSource(String groupId, String topic, OffsetsInitializer offsets) {
+        return KafkaSource.<ObjectNode>builder()
+                .setBootstrapServers(KAFKA_BOOTSTRAP)
+                .setTopics(topic)
+                .setGroupId(groupId)
+                .setStartingOffsets(offsets)
+                .setProperty("allow.auto.create.topics", "true")
+                // dùng property để tránh phụ thuộc API setPartitionDiscoveryInterval chỉ có ở connector mới
+                .setProperty("partition.discovery.interval.ms", "15000")
+                .setValueOnlyDeserializer(new JsonNodeDeserializationSchema())
+                .build();
+    }
     static OffsetsInitializer offsetsInitializer(String envVar, String defaultMode) {
         String configured = envVar != null ? System.getenv(envVar) : null;
         String resolved = (configured == null || configured.trim().isEmpty())
