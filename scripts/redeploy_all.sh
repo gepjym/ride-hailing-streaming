@@ -117,6 +117,16 @@ ensure_running(){
   state=$(docker inspect -f '{{.State.Status}} {{.State.Paused}}' "$container" 2>/dev/null || echo "unknown false")
   status="${state%% *}"
   paused="${state##* }"
+
+  # Nếu container không tồn tại (state=unknown) thử dựng lại service tương ứng qua docker compose
+  if [[ "$status" == "unknown" ]]; then
+    info "Container $container chưa tồn tại → docker compose up -d $container"
+    docker compose up -d "$container" >/dev/null 2>&1 || true
+    state=$(docker inspect -f '{{.State.Status}} {{.State.Paused}}' "$container" 2>/dev/null || echo "unknown false")
+    status="${state%% *}"
+    paused="${state##* }"
+  fi
+
   if [[ "$status" == "paused" || "$paused" == "true" ]]; then
     info "Container $container đang paused → unpause"
     docker unpause "$container" >/dev/null 2>&1 || true
