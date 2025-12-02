@@ -4,6 +4,7 @@ set -euo pipefail
 # ================= CẤU HÌNH NHANH =================
 FLINK_MAIN_CLASS="${FLINK_MAIN_CLASS:-com.ridehailing.RideHailingDataProcessor}"
 CONNECTOR_NAME="${CONNECTOR_NAME:-pg-source-connector}"
+CONNECTOR_FILE="${CONNECTOR_FILE:-connectors/pg-source-connector.json}"
 ES_INDEX="${ES_INDEX:-driver_locations}"
 
 RUN_GENERATOR="${RUN_GENERATOR:-false}"     # true/false
@@ -20,6 +21,8 @@ KAFKA_BOOTSTRAP="${KAFKA_BOOTSTRAP:-kafka-1:19092,kafka-2:19092,kafka-3:19092}"
 KAFKA_CLI_CONTAINER="${KAFKA_CLI_CONTAINER:-kafka-1}"
 ES_USERNAME="${ES_USERNAME:-elastic}"
 ES_PASSWORD="${ELASTIC_PASSWORD:-changeme123}"
+# kafka-topics binary will be auto-detected (Confluent vs Bitnami)
+KAFKA_TOPICS_BIN="${KAFKA_TOPICS_BIN:-}"
 # ================================================
 
 ROOT="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )"
@@ -55,70 +58,6 @@ wait_for_http(){
     (( $(date +%s) - start > timeout )) && { err "Timeout đợi $url"; return 1; }
   done
   ok "$url OK"
-}
-
-wait_for_topics(){
-  local timeout="${1:-180}"
-  shift
-  local required=("$@")
-  if [[ ${#required[@]} -eq 0 ]]; then
-    return 0
-  fi
-  ensure_running "$KAFKA_CLI_CONTAINER"
-  local start="$(date +%s)"
-  info "Đợi Kafka có các topic: ${required[*]} ..."
-  while true; do
-    local topic_list
-    topic_list=$(docker exec -i "$KAFKA_CLI_CONTAINER" kafka-topics --bootstrap-server "$KAFKA_BOOTSTRAP" --list 2>/dev/null || true)
-    local missing=()
-    local not_ready=()
-    for topic in "${required[@]}"; do
-      if ! grep -Fxq "$topic" <<<"$topic_list"; then
-        missing+=("$topic")
-        continue
-      fi
-      if ! docker exec -i "$KAFKA_CLI_CONTAINER" kafka-topics --bootstrap-server "$KAFKA_BOOTSTRAP" --describe --topic "$topic" >/dev/null 2>&1; then
-        not_ready+=("$topic")
-      fi
-    done
-    if [[ ${#missing[@]} -eq 0 && ${#not_ready[@]} -eq 0 ]]; then
-      ok "Kafka topics sẵn sàng"
-      return 0
-    fi
-    if (( $(date +%s) - start > timeout )); then
-      err "Timeout đợi Kafka topics: ${missing[*]} ${not_ready[*]}"
-      docker exec -i "$KAFKA_CLI_CONTAINER" kafka-topics --bootstrap-server "$KAFKA_BOOTSTRAP" --list || true
-      return 1
-    fi
-    sleep 5
-  done
-}
-
-wait_for_kafka_brokers(){
-  local timeout="${1:-180}"
-  local start="$(date +%s)"
-
-  # Đảm bảo cả 3 broker đã được khởi động/không bị pause
-  for b in kafka-1 kafka-2 kafka-3; do
-    ensure_running "$b"
-  done
-
-  info "Đợi Kafka brokers sẵn sàng ..."
-  while true; do
-    ensure_running "$KAFKA_CLI_CONTAINER"
-    if docker exec -i "$KAFKA_CLI_CONTAINER" kafka-topics --bootstrap-server "$KAFKA_BOOTSTRAP" --list >/dev/null 2>&1; then
-      ok "Kafka brokers đã sẵn sàng"
-      return 0
-    fi
-
-    if (( $(date +%s) - start > timeout )); then
-      err "Timeout đợi Kafka brokers sẵn sàng"
-      docker logs "$KAFKA_CLI_CONTAINER" | tail -n 80 >&2 || true
-      return 1
-    fi
-
-    sleep 3
-  done
 }
 
 # 0) In thông tin tổng quan
@@ -181,17 +120,104 @@ ensure_running(){
   done
 }
 
+detect_kafka_topics_bin(){
+  local c="$KAFKA_CLI_CONTAINER"
+  ensure_running "$c" || return 1
+  if docker exec -i "$c" bash -lc 'command -v kafka-topics >/dev/null 2>&1'; then
+    KAFKA_TOPICS_BIN="kafka-topics"
+    return 0
+  fi
+  if docker exec -i "$c" bash -lc '[ -x /opt/bitnami/kafka/bin/kafka-topics.sh ]'; then
+    KAFKA_TOPICS_BIN="/opt/bitnami/kafka/bin/kafka-topics.sh"
+    return 0
+  fi
+  err "Không tìm thấy kafka-topics trong container $c"
+  return 1
+}
+
+kafka_topics(){
+  ensure_running "$KAFKA_CLI_CONTAINER" || return 1
+  if [[ -z "${KAFKA_TOPICS_BIN:-}" ]]; then
+    detect_kafka_topics_bin || return 1
+  fi
+  docker exec -i "$KAFKA_CLI_CONTAINER" "$KAFKA_TOPICS_BIN" --bootstrap-server "$KAFKA_BOOTSTRAP" "$@"
+}
+
+wait_for_topics(){
+  local timeout="${1:-180}"
+  shift
+  local required=("$@")
+  if [[ ${#required[@]} -eq 0 ]]; then
+    return 0
+  fi
+  ensure_running "$KAFKA_CLI_CONTAINER"
+  local start="$(date +%s)"
+  info "Đợi Kafka có các topic: ${required[*]} ..."
+  while true; do
+    local topic_list
+    topic_list=$(kafka_topics --list 2>/dev/null || true)
+    local missing=()
+    local not_ready=()
+    for topic in "${required[@]}"; do
+      if ! grep -Fxq "$topic" <<<"$topic_list"; then
+        missing+=("$topic")
+        continue
+      fi
+      if ! kafka_topics --describe --topic "$topic" >/dev/null 2>&1; then
+        not_ready+=("$topic")
+      fi
+    done
+    if [[ ${#missing[@]} -eq 0 && ${#not_ready[@]} -eq 0 ]]; then
+      ok "Kafka topics sẵn sàng"
+      return 0
+    fi
+    if (( $(date +%s) - start > timeout )); then
+      err "Timeout đợi Kafka topics: ${missing[*]} ${not_ready[*]}"
+      kafka_topics --list || true
+      return 1
+    fi
+    sleep 5
+  done
+}
+
+wait_for_kafka_brokers(){
+  local timeout="${1:-180}"
+  local start="$(date +%s)"
+
+  # Đảm bảo cả 3 broker đã được khởi động/không bị pause
+  for b in kafka-1 kafka-2 kafka-3; do
+    ensure_running "$b"
+  done
+
+  info "Đợi Kafka brokers sẵn sàng ..."
+  while true; do
+    ensure_running "$KAFKA_CLI_CONTAINER"
+    if kafka_topics --list >/dev/null 2>&1; then
+      ok "Kafka brokers đã sẵn sàng"
+      return 0
+    fi
+
+    if (( $(date +%s) - start > timeout )); then
+      err "Timeout đợi Kafka brokers sẵn sàng"
+      docker logs "$KAFKA_CLI_CONTAINER" | tail -n 80 >&2 || true
+      return 1
+    fi
+
+    sleep 3
+  done
+}
+
 ensure_topic(){
   local topic="$1"
   local attempts=0
   info "Đảm bảo Kafka topic '${topic}' tồn tại..."
   ensure_running "$KAFKA_CLI_CONTAINER" || return 1
   while true; do
-    if docker exec -i "$KAFKA_CLI_CONTAINER" kafka-topics --bootstrap-server "$KAFKA_BOOTSTRAP" --describe --topic "$topic" >/dev/null 2>&1; then
+    if kafka_topics --describe --topic "$topic" >/dev/null 2>&1; then
       ok "Topic '${topic}' đã tồn tại"
       return 0
     fi
-    if docker exec -i "$KAFKA_CLI_CONTAINER" kafka-topics --bootstrap-server "$KAFKA_BOOTSTRAP" --create --if-not-exists --topic "$topic" --partitions 3 --replication-factor 3 >/dev/null 2>&1; then
+    if kafka_topics --create --if-not-exists --topic "$topic" --partitions 3 --replication-factor 3 >/dev/null 2>&1; then
       ok "Topic '${topic}' đã tạo"
       return 0
     fi
@@ -199,7 +225,7 @@ ensure_topic(){
     ensure_running "$KAFKA_CLI_CONTAINER" || true
     if (( attempts++ >= 30 )); then
       err "Không thể tạo topic '${topic}'"
-      docker exec -i "$KAFKA_CLI_CONTAINER" kafka-topics --bootstrap-server "$KAFKA_BOOTSTRAP" --list || true
+      kafka_topics --list || true
       return 1
     fi
     sleep 3
@@ -320,16 +346,28 @@ info "Đăng ký Kafka Connect Debezium..."
 # Xoá connector cũ (nếu có) cho sạch
 curl -s -X DELETE "http://localhost:8083/connectors/${CONNECTOR_NAME}" >/dev/null 2>&1 || true
 # Đăng ký lại từ file cấu hình
-if [[ -f "connectors/pg-source-connector.json" ]]; then
-  curl -s -X POST "http://localhost:8083/connectors" \
-    -H 'Content-Type: application/json' \
-    --data @"connectors/pg-source-connector.json" >/dev/null
-else
-  err "Thiếu file connectors/pg-source-connector.json"; exit 1
+if [[ ! -f "$CONNECTOR_FILE" ]]; then
+  if [[ -f "pg-source-connector.json" ]]; then
+    CONNECTOR_FILE="pg-source-connector.json"
+  else
+    err "Không tìm thấy file connector JSON (CONNECTOR_FILE=$CONNECTOR_FILE)"; exit 1
+  fi
 fi
+
+curl -s -X POST "http://localhost:8083/connectors" \
+  -H 'Content-Type: application/json' \
+  --data @"${CONNECTOR_FILE}" >/dev/null
+
 sleep 2
-curl -s "http://localhost:8083/connectors/${CONNECTOR_NAME}/status" | sed -n '1,120p'
-ok "Connector đã đăng ký (kỳ vọng RUNNING)"
+status_json="$(curl -s "http://localhost:8083/connectors/${CONNECTOR_NAME}/status")"
+echo "$status_json" | sed -n '1,120p'
+if echo "$status_json" | grep -q '"state"[[:space:]]*:[[:space:]]*"RUNNING"'; then
+  ok "Connector RUNNING"
+else
+  err "Connector chưa RUNNING (hoặc chưa tạo). Kiểm tra log kafka-connect."
+  docker compose logs --tail=120 kafka-connect >&2 || true
+  exit 1
+fi
 
 # đảm bảo các topic CDC đã được tạo trước khi Flink kết nối
 ensure_topic "ridehailing.public.booking"
