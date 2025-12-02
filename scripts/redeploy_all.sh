@@ -103,8 +103,11 @@ info "Generator:  RUN=${RUN_GENERATOR}, MODE=${GENERATOR_MODE}, VOL=${GENERATOR_
 info "Generator DB: host=${GENERATOR_PGHOST} port=${GENERATOR_PGPORT} db=${GENERATOR_PGDB}"
 
 # 1) HẠ TOÀN BỘ STACK + XOÁ VOLUMES (RESET SẠCH)
-info "docker compose down -v ..."
-docker compose down -v || true
+info "docker compose down -v --remove-orphans ..."
+# dọn sạch các container/broker lẻ (ví dụ 'kafka' bản cũ) để tránh kẹt network/port
+docker compose down -v --remove-orphans || true
+# xoá thủ công container kafka đơn lẻ nếu còn sót
+docker rm -f kafka >/dev/null 2>&1 || true
 ok "Đã down -v"
 
 # helper đảm bảo container không bị pause/stop
@@ -152,12 +155,23 @@ wait_for_postgres(){
   local start="$(date +%s)"
   info "Đợi PostgreSQL $container ($db)..."
   ensure_running "$container"
+  local attempt=0
   until docker exec "$container" pg_isready -d "$db" -U "$user" >/dev/null 2>&1; do
     sleep 2
+    ((attempt++))
+    # nếu container không chạy (ví dụ fail do conflict port), thử khởi động lại và log cảnh báo
+    if ! docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null | grep -q true; then
+      info "Container $container chưa chạy, thử khởi động lại..."
+      docker start "$container" >/dev/null 2>&1 || true
+    fi
     if (( $(date +%s) - start > timeout )); then
       err "Timeout đợi $container";
-      docker logs "$container" | tail -n 40 >&2 || true
+      docker logs "$container" | tail -n 80 >&2 || true
       return 1
+    fi
+    # thỉnh thoảng in dấu chấm để tránh cảm giác đứng im
+    if (( attempt % 10 == 0 )); then
+      info "... vẫn chờ $container khởi động (attempt=${attempt})"
     fi
   done
   ok "$container sẵn sàng"
