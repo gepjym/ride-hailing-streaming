@@ -141,27 +141,42 @@ ok "Đã down -v"
 ensure_running(){
   local container="$1"
   local state status paused
-  state=$(docker inspect -f '{{.State.Status}} {{.State.Paused}}' "$container" 2>/dev/null || echo "unknown false")
-  status="${state%% *}"
-  paused="${state##* }"
+  local start_ts="$(date +%s)"
 
-  # Nếu container không tồn tại (state=unknown) thử dựng lại service tương ứng qua docker compose
-  if [[ "$status" == "unknown" ]]; then
-    info "Container $container chưa tồn tại → docker compose up -d $container"
-    docker compose up -d "$container" >/dev/null 2>&1 || true
+  while true; do
     state=$(docker inspect -f '{{.State.Status}} {{.State.Paused}}' "$container" 2>/dev/null || echo "unknown false")
     status="${state%% *}"
     paused="${state##* }"
-  fi
 
-  if [[ "$status" == "paused" || "$paused" == "true" ]]; then
-    info "Container $container đang paused → unpause"
-    docker unpause "$container" >/dev/null 2>&1 || true
-  fi
-  if [[ "$status" != "running" ]]; then
-    info "Khởi động container $container"
-    docker start "$container" >/dev/null 2>&1 || true
-  fi
+    # Nếu container không tồn tại (state=unknown) thử dựng lại service tương ứng qua docker compose
+    if [[ "$status" == "unknown" ]]; then
+      info "Container $container chưa tồn tại → docker compose up -d $container"
+      docker compose up -d "$container" >/dev/null 2>&1 || true
+      sleep 2
+      continue
+    fi
+
+    if [[ "$status" == "paused" || "$paused" == "true" ]]; then
+      info "Container $container đang paused → unpause"
+      docker unpause "$container" >/dev/null 2>&1 || true
+      sleep 1
+      continue
+    fi
+
+    if [[ "$status" != "running" ]]; then
+      info "Khởi động container $container"
+      docker start "$container" >/dev/null 2>&1 || true
+      sleep 2
+      # quay vòng kiểm tra lại
+      if (( $(date +%s) - start_ts > 120 )); then
+        err "Container $container không thể khởi động sau 120s"; return 1
+      fi
+      continue
+    fi
+
+    # container đang running → thoát
+    return 0
+  done
 }
 
 ensure_topic(){
