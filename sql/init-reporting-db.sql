@@ -1,3 +1,6 @@
+-- Khởi tạo database reporting cho bài toán ride-hailing
+-- Bao gồm schema mart, bảng fact, bảng KPI và các view phục vụ BI
+
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- Dọn sạch schema mart để đảm bảo script có thể chạy nhiều lần (dev/test)

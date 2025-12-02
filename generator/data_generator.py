@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Synthetic data generator for the ride-hailing operational database.
 
 The script resets a subset of the OLTP schema and reseeds it with internally
@@ -58,6 +59,14 @@ from typing import Iterable, List, Mapping, MutableMapping, Optional, Sequence, 
 
 import psycopg2
 import psycopg2.extras
+
+
+# Register uuid adapter early so both psycopg2-binary and the system psycopg2
+# packages can serialise ``uuid.UUID`` values even when the underlying column is
+# declared as ``uuid``.  Some environments (notably macOS system Python) do not
+# enable the adapter by default which leads to "can't adapt type 'UUID'"
+# errors when batching inserts.
+psycopg2.extras.register_uuid()
 from faker import Faker
 
 
@@ -80,12 +89,70 @@ VOLUME_PRESETS = {
     "large":  {"rides": 15000, "drivers": 6000, "passengers": 12000},
 }
 
+# Streaming mode presets scale the live event rate based on the requested
+# volume profile.  Users can still override any parameter explicitly via the
+# CLI; the preset only applies when a flag is left unspecified.
+STREAM_PRESETS = {
+    "tiny": {
+        "stream_drivers": 120,
+        "stream_passengers": 240,
+        "stream_max_inflight": 120,
+        "stream_new_booking_prob": 0.35,
+        "stream_driver_updates": 3,
+        "stream_cancel_prob": 0.10,
+        "stream_sleep_min": 0.6,
+        "stream_sleep_max": 1.4,
+        "stream_step_min": 5,
+        "stream_step_max": 20,
+        "stream_log_interval": 40,
+    },
+    "small": {
+        "stream_drivers": 400,
+        "stream_passengers": 800,
+        "stream_max_inflight": 600,
+        "stream_new_booking_prob": 0.65,
+        "stream_driver_updates": 8,
+        "stream_cancel_prob": 0.12,
+        "stream_sleep_min": 0.35,
+        "stream_sleep_max": 0.9,
+        "stream_step_min": 4,
+        "stream_step_max": 18,
+        "stream_log_interval": 30,
+    },
+    "medium": {
+        "stream_drivers": 1200,
+        "stream_passengers": 2400,
+        "stream_max_inflight": 2500,
+        "stream_new_booking_prob": 0.85,
+        "stream_driver_updates": 15,
+        "stream_cancel_prob": 0.14,
+        "stream_sleep_min": 0.18,
+        "stream_sleep_max": 0.45,
+        "stream_step_min": 3,
+        "stream_step_max": 14,
+        "stream_log_interval": 20,
+    },
+    "large": {
+        "stream_drivers": 3000,
+        "stream_passengers": 6000,
+        "stream_max_inflight": 6000,
+        "stream_new_booking_prob": 0.97,
+        "stream_driver_updates": 28,
+        "stream_cancel_prob": 0.15,
+        "stream_sleep_min": 0.05,
+        "stream_sleep_max": 0.15,
+        "stream_step_min": 2,
+        "stream_step_max": 10,
+        "stream_log_interval": 15,
+    },
+}
+
 SERVICE_TYPES = ["BIKE", "CAR"]
 SERVICE_TIERS = ["ECONOMY", "PREMIUM"]
 AREAS = ["Q1", "Q3", "Q7", "BT", "TP", "DN", "HP", "BD"]
 COUNTRY_CODES = ["VN", "SG"]
 
-VAT_RATE = Decimal("0.08")  # 8% VAT assumption for revenue split
+VAT_RATE = Decimal("0.10")  # 10% VAT (khớp với Flink job)
 
 faker = Faker("vi_VN")
 Faker.seed(2024)
@@ -244,7 +311,12 @@ def batch_upsert(
         f"VALUES ({placeholder}) {conflict_sql}"
     )
 
-    payload = [tuple(row.get(col) for col in all_columns) for row in filtered]
+    def _normalise(value: object) -> object:
+        if isinstance(value, uuid.UUID):
+            return str(value)
+        return value
+
+    payload = [tuple(_normalise(row.get(col)) for col in all_columns) for row in filtered]
     psycopg2.extras.execute_batch(conn.cursor(), sql, payload, page_size=1000)
     return len(payload)
 
@@ -254,12 +326,17 @@ def batch_upsert(
 # --------------------------------------------------------------------------------------
 
 
+def _random_email(prefix: str) -> str:
+    slug = "".join(ch for ch in prefix.lower() if ch.isalnum()) or "user"
+    return f"{slug[:10]}-{uuid.uuid4().hex[:10]}@example.com"
+
+
 def build_driver(driver_id: uuid.UUID, now: datetime) -> Mapping[str, object]:
     full_name = faker.name()
     return {
         "id": driver_id,
         "fullName": full_name,
-        "email": faker.unique.email(),
+        "email": _random_email(full_name),
         "phoneNumber": random.randint(100_000_000, 999_999_999),
         "countryCode": random.choice(COUNTRY_CODES),
         "status": "ACTIVE",
@@ -276,10 +353,11 @@ def build_driver(driver_id: uuid.UUID, now: datetime) -> Mapping[str, object]:
 
 
 def build_passenger(passenger_id: uuid.UUID, now: datetime) -> Mapping[str, object]:
+    full_name = faker.name()
     return {
         "id": passenger_id,
-        "fullName": faker.name(),
-        "email": faker.unique.email(),
+        "fullName": full_name,
+        "email": _random_email(full_name),
         "phoneNumber": random.randint(1_000_000_000, 9_999_999_999),
         "countryCode": random.choice(COUNTRY_CODES),
         "status": "ACTIVE",
@@ -666,17 +744,357 @@ def seed_postgres(
 
 
 # --------------------------------------------------------------------------------------
+# Streaming mode helpers
+# --------------------------------------------------------------------------------------
+
+
+def ensure_min_entities(
+    conn,
+    schema: str,
+    table: str,
+    target_count: int,
+    builder,
+    column_cache: Optional[Mapping[str, Sequence[str]]] = None,
+) -> List[uuid.UUID]:
+    cur = conn.cursor()
+    cur.execute(
+        f"SELECT COUNT(*) FROM {pg_ident(schema)}.{pg_ident(table)}"
+    )
+    current = cur.fetchone()[0]
+    needed = max(0, target_count - current)
+
+    if needed > 0:
+        now = utc_now()
+        try:
+            faker.unique.clear()
+        except AttributeError:
+            pass
+        rows = [builder(uuid.uuid4(), now) for _ in range(needed)]
+        batch_upsert(
+            conn,
+            schema,
+            table,
+            rows,
+            pk="id",
+            do_update=False,
+            column_cache=column_cache,
+        )
+
+    cur.execute(
+        f"SELECT id FROM {pg_ident(schema)}.{pg_ident(table)}"
+    )
+    return [row[0] for row in cur.fetchall()]
+
+
+def ensure_driver_locations(
+    conn,
+    schema: str,
+    driver_ids: Sequence[uuid.UUID],
+    column_cache: Optional[Mapping[str, Sequence[str]]] = None,
+) -> None:
+    cur = conn.cursor()
+    cur.execute(
+        f"SELECT \"driverId\" FROM {pg_ident(schema)}.{pg_ident('driver_location')}"
+    )
+    existing = {row[0] for row in cur.fetchall()}
+    missing = [driver_id for driver_id in driver_ids if driver_id not in existing]
+    if not missing:
+        return
+
+    now = utc_now()
+    rows: List[Mapping[str, object]] = []
+    for driver_id in missing:
+        lon, lat = rand_point()
+        rows.append(
+            {
+                "id": uuid.uuid4(),
+                "driverId": driver_id,
+                "coordinates": f"SRID=4326;POINT({lon:.6f} {lat:.6f})",
+                "availability": "AVAILABLE",
+                "createdAt": now,
+                "updatedAt": now,
+            }
+        )
+
+    batch_upsert(
+        conn,
+        schema,
+        "driver_location",
+        rows,
+        pk="id",
+        do_update=False,
+        column_cache=column_cache,
+    )
+
+
+def stream_create_booking(
+    cur,
+    schema: str,
+    passenger_id: uuid.UUID,
+    booking_columns: Sequence[str],
+) -> Tuple[uuid.UUID, datetime]:
+    lon1, lat1 = rand_point()
+    lon2, lat2 = rand_point()
+    booking_id = uuid.uuid4()
+    now = utc_now()
+    service_type = random.choice(SERVICE_TYPES)
+    service_tier = random.choice(SERVICE_TIERS)
+    ward = random.choice(AREAS)
+    discount = random.randint(0, 20_000)
+    platform_fee = random.randint(20_000, 120_000)
+    total_before = platform_fee + random.randint(10_000, 80_000)
+    total_after = max(total_before - discount, 0)
+
+    values = {
+        "id": booking_id,
+        "passengerId": passenger_id,
+        "status": "REQUESTED",
+        "serviceTypeCode": service_type,
+        "serviceTierCode": service_tier,
+        "pickupAddress": "Pickup",
+        "dropoffAddress": "Dropoff",
+        "pickupLocation": f"SRID=4326;POINT({lon1} {lat1})",
+        "dropoffLocation": f"SRID=4326;POINT({lon2} {lat2})",
+        "wardCode": ward,
+        "discountAmount": discount,
+        "platformFee": platform_fee,
+        "totalAmountBeforeDiscount": total_before,
+        "totalAmountAfterDiscount": total_after,
+        "totalAmount": total_after,
+        "serviceVariantsCode": random.choice(SERVICE_TIERS),
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+    cols = [c for c in values if c in booking_columns]
+    placeholders = ["%s"] * len(cols)
+    sql = textwrap.dedent(
+        f"""
+        INSERT INTO {pg_ident(schema)}.{pg_ident('booking')} (
+          {', '.join(pg_ident(c) for c in cols)}
+        ) VALUES (
+          {', '.join(placeholders)}
+        )
+        """
+    )
+    params = [values[c] for c in cols]
+    cur.execute(sql, params)
+
+    return booking_id, now
+
+
+def stream_advance_booking(
+    cur,
+    schema: str,
+    booking_id: uuid.UUID,
+    current_status: str,
+    current_ts: datetime,
+    cancel_prob: float,
+    step_min: int,
+    step_max: int,
+    booking_columns: Sequence[str],
+) -> Tuple[str, datetime]:
+    transitions = {
+        "REQUESTED": "DRIVER_ACCEPTED",
+        "DRIVER_ACCEPTED": "AT_PICKUP",
+        "AT_PICKUP": "STARTED",
+        "STARTED": "COMPLETED",
+        "COMPLETED": "COMPLETED",
+    }
+
+    next_status = transitions.get(current_status, "COMPLETED")
+    if current_status in {"REQUESTED", "DRIVER_ACCEPTED"} and random.random() < cancel_prob:
+        next_status = "CANCELED"
+
+    next_ts = current_ts + timedelta(seconds=random.randint(step_min, step_max))
+
+    updates = ["status = %s"]
+    params: List[object] = [next_status]
+
+    if "updatedAt" in booking_columns:
+        updates.append('"updatedAt" = %s')
+        params.append(next_ts)
+
+    if next_status != "CANCELED":
+        ts_column = {
+            "DRIVER_ACCEPTED": "atPickUpAt",
+            "AT_PICKUP": "atPickUpAt",
+            "STARTED": "startTripAt",
+            "COMPLETED": "completedAt",
+        }.get(next_status)
+        if ts_column and ts_column in booking_columns:
+            updates.insert(1, f'{pg_ident(ts_column)} = %s')
+            params.insert(1, next_ts)
+
+    params.append(booking_id)
+    sql = textwrap.dedent(
+        f"""
+        UPDATE {pg_ident(schema)}.{pg_ident('booking')}
+           SET {', '.join(updates)}
+         WHERE id = %s
+        """
+    )
+    cur.execute(sql, params)
+    return next_status, next_ts
+
+
+def stream_move_driver(cur, schema: str, driver_id: uuid.UUID) -> None:
+    lon, lat = rand_point()
+    availability = random.choice(["AVAILABLE", "BUSY", "UNAVAILABLE"])
+    cur.execute(
+        textwrap.dedent(
+            f"""
+            UPDATE {pg_ident(schema)}.{pg_ident('driver_location')}
+               SET coordinates = ST_SetSRID(ST_MakePoint(%s, %s), 4326),
+                   availability = %s,
+                   "updatedAt" = now()
+             WHERE "driverId" = %s
+            """
+        ),
+        (lon, lat, availability, driver_id),
+    )
+    if cur.rowcount == 0:
+        cur.execute(
+            textwrap.dedent(
+                f"""
+                INSERT INTO {pg_ident(schema)}.{pg_ident('driver_location')} (
+                  id, "driverId", coordinates, availability, "createdAt", "updatedAt"
+                ) VALUES (
+                  %s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326), %s, now(), now()
+                )
+                """
+            ),
+            (uuid.uuid4(), driver_id, lon, lat, availability),
+        )
+
+
+def run_streaming_mode(args: argparse.Namespace, db_cfg: Mapping[str, object]) -> None:
+    db_cfg_local = dict(db_cfg)
+    conn = connect(db_cfg_local)
+    try:
+        column_cache = fetch_table_columns(conn, args.pg_schema)
+        booking_columns = column_cache.get("booking", [])
+        drivers = ensure_min_entities(
+            conn,
+            args.pg_schema,
+            "driver",
+            args.stream_drivers,
+            build_driver,
+            column_cache,
+        )
+        passengers = ensure_min_entities(
+            conn,
+            args.pg_schema,
+            "passenger",
+            args.stream_passengers,
+            build_passenger,
+            column_cache,
+        )
+        ensure_driver_locations(conn, args.pg_schema, drivers, column_cache)
+
+        if not drivers or not passengers:
+            raise RuntimeError("Streaming mode requires at least one driver and one passenger")
+
+        print_header(
+            args.volume,
+            VOLUME_PRESETS.get(args.volume, VOLUME_PRESETS["small"]),
+            db_cfg_local,
+            args.pg_schema,
+        )
+        print(
+            "[stream] config: "
+            f"drivers>={args.stream_drivers} passengers>={args.stream_passengers} "
+            f"max_inflight={args.stream_max_inflight} new_prob={args.stream_new_booking_prob:.2f} "
+            f"driver_updates<= {args.stream_driver_updates} cancel_prob={args.stream_cancel_prob:.2f} "
+            f"sleep=[{args.stream_sleep_min:.2f},{args.stream_sleep_max:.2f}]s "
+            f"step=[{args.stream_step_min},{args.stream_step_max}]s "
+            f"log_every={args.stream_log_interval}",
+            flush=True,
+        )
+        print(
+            f"[stream] baseline ready → drivers={len(drivers)} passengers={len(passengers)}",
+            flush=True,
+        )
+
+        cur = conn.cursor()
+        inflight: MutableMapping[uuid.UUID, Tuple[str, datetime]] = {}
+        iteration = 0
+        last_status: Optional[str] = None
+        try:
+            while True:
+                iteration += 1
+
+                if (
+                    len(inflight) < args.stream_max_inflight
+                    and random.random() < args.stream_new_booking_prob
+                    and passengers
+                ):
+                    passenger_id = random.choice(passengers)
+                    booking_id, ts = stream_create_booking(cur, args.pg_schema, passenger_id, booking_columns)
+                    inflight[booking_id] = ("REQUESTED", ts)
+                    last_status = "REQUESTED"
+
+                for booking_id in list(inflight.keys()):
+                    status, ts = inflight[booking_id]
+                    next_status, next_ts = stream_advance_booking(
+                        cur,
+                        args.pg_schema,
+                        booking_id,
+                        status,
+                        ts,
+                        args.stream_cancel_prob,
+                        args.stream_step_min,
+                        args.stream_step_max,
+                        booking_columns,
+                    )
+                    last_status = next_status
+                    if next_status in {"COMPLETED", "CANCELED"}:
+                        inflight.pop(booking_id, None)
+                    else:
+                        inflight[booking_id] = (next_status, next_ts)
+
+                if drivers:
+                    updates_cap = max(0, args.stream_driver_updates)
+                    if updates_cap:
+                        updates = random.randint(1, updates_cap)
+                        for _ in range(updates):
+                            stream_move_driver(cur, args.pg_schema, random.choice(drivers))
+
+                if iteration % max(1, args.stream_log_interval) == 0:
+                    print(
+                        f"[stream] iter={iteration} inflight={len(inflight)} last_status={last_status}",
+                        flush=True,
+                    )
+
+                sleep_lo = min(args.stream_sleep_min, args.stream_sleep_max)
+                sleep_hi = max(args.stream_sleep_min, args.stream_sleep_max)
+                time.sleep(random.uniform(sleep_lo, sleep_hi))
+        except KeyboardInterrupt:
+            print("\n[stream] stopping ...", flush=True)
+        finally:
+            cur.close()
+    finally:
+        conn.close()
+
+
+# --------------------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------------------
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Seed ride-hailing OLTP data")
+    parser = argparse.ArgumentParser(description="Seed or stream ride-hailing OLTP data")
+    parser.add_argument(
+        "--mode",
+        choices=["seed", "stream"],
+        default="seed",
+        help="Operation mode: seed a static dataset or emit streaming updates",
+    )
     parser.add_argument(
         "--volume",
         choices=sorted(VOLUME_PRESETS.keys()),
         default="small",
-        help="Synthetic data volume profile",
+        help="Synthetic data volume profile for seed mode",
     )
     parser.add_argument("--pg-host", default=DEFAULT_DB["host"], help="Postgres host")
     parser.add_argument("--pg-port", type=int, default=DEFAULT_DB["port"], help="Postgres port")
@@ -687,7 +1105,99 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--skip-reset",
         action="store_true",
-        help="Do not truncate tables before inserting (append-only)",
+        help="Do not truncate tables before inserting (append-only) in seed mode",
+    )
+
+    stream = parser.add_argument_group("Streaming mode options")
+    stream.add_argument(
+        "--stream-drivers",
+        type=int,
+        default=None,
+        help="Ensure at least this many drivers exist before streaming (preset per volume)",
+    )
+    stream.add_argument(
+        "--stream-passengers",
+        type=int,
+        default=None,
+        help="Ensure at least this many passengers exist before streaming (preset per volume)",
+    )
+    stream.add_argument(
+        "--stream-max-inflight",
+        type=int,
+        default=None,
+        help="Maximum concurrent bookings being progressed in streaming mode (preset per volume)",
+    )
+    stream.add_argument(
+        "--stream-new-booking-prob",
+        type=float,
+        default=None,
+        help="Probability of creating a new booking each iteration (preset per volume)",
+    )
+    stream.add_argument(
+        "--stream-driver-updates",
+        type=int,
+        default=None,
+        help="Maximum driver location updates per iteration (preset per volume)",
+    )
+    stream.add_argument(
+        "--stream-cancel-prob",
+        type=float,
+        default=None,
+        help="Cancellation probability during REQUESTED/DRIVER_ACCEPTED states (preset per volume)",
+    )
+    stream.add_argument(
+        "--stream-sleep-min",
+        type=float,
+        default=None,
+        help="Minimum sleep seconds between iterations (preset per volume)",
+    )
+    stream.add_argument(
+        "--stream-sleep-max",
+        type=float,
+        default=None,
+        help="Maximum sleep seconds between iterations (preset per volume)",
+    )
+    stream.add_argument(
+        "--stream-step-min",
+        type=int,
+        default=None,
+        help="Minimum seconds between booking status transitions (preset per volume)",
+    )
+    stream.add_argument(
+        "--stream-step-max",
+        type=int,
+        default=None,
+        help="Maximum seconds between booking status transitions (preset per volume)",
+    )
+    stream.add_argument(
+        "--stream-log-interval",
+        type=int,
+        default=None,
+        help="Print streaming stats every N iterations (preset per volume)",
+    )
+    stream.add_argument(
+        "--stream-rps",
+        type=float,
+        default=None,
+        help="Xấp xỉ số booking mới mỗi giây; được ánh xạ sang xác suất tạo booking",
+    )
+    stream.add_argument(
+        "--driver-count",
+        type=int,
+        default=None,
+        help="Alias cho --stream-drivers (giữ vì các script cũ)",
+    )
+    stream.add_argument(
+        "--passenger-count",
+        type=int,
+        default=None,
+        help="Alias cho --stream-passengers",
+    )
+    stream.add_argument(
+        "--booking-parallelism",
+        type=int,
+        default=None,
+        help="Alias cho --stream-max-inflight",
     )
     return parser.parse_args(argv)
 
@@ -702,6 +1212,30 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "user": args.pg_user,
         "password": args.pg_password,
     }
+
+    if args.mode == "stream":
+        preset = STREAM_PRESETS.get(args.volume, STREAM_PRESETS["small"])
+        alias_overrides = {}
+        if args.driver_count is not None:
+            alias_overrides["stream_drivers"] = args.driver_count
+        if args.passenger_count is not None:
+            alias_overrides["stream_passengers"] = args.passenger_count
+        if args.booking_parallelism is not None:
+            alias_overrides["stream_max_inflight"] = args.booking_parallelism
+        for key, value in preset.items():
+            if getattr(args, key) is None:
+                setattr(args, key, value)
+        for key, value in alias_overrides.items():
+            setattr(args, key, value)
+        if args.stream_rps is not None:
+            avg_sleep = max(0.001, (args.stream_sleep_min + args.stream_sleep_max) / 2.0)
+            args.stream_new_booking_prob = max(0.0, min(0.999, args.stream_rps * avg_sleep))
+            print(
+                f"[stream] target_rps≈{args.stream_rps:.2f} ⇒ new_booking_prob={args.stream_new_booking_prob:.3f} "
+                f"(avg_sleep≈{avg_sleep:.3f}s)"
+            )
+        run_streaming_mode(args, db_cfg)
+        return
 
     print_header(args.volume, preset, db_cfg, args.pg_schema)
     print("🚀 Generating base entities ...")

@@ -1,5 +1,162 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ================= CẤU HÌNH NHANH =================
+FLINK_MAIN_CLASS="${FLINK_MAIN_CLASS:-com.ridehailing.RideHailingDataProcessor}"
+CONNECTOR_NAME="${CONNECTOR_NAME:-pg-source-connector}"
+ES_INDEX="${ES_INDEX:-driver_locations}"
+
+RUN_GENERATOR="${RUN_GENERATOR:-false}"     # true/false
+GENERATOR_SECONDS="${GENERATOR_SECONDS:-0}" # >0: tự dừng generator sau N giây
+GENERATOR_MODE="${GENERATOR_MODE:-stream}"  # stream | seed
+GENERATOR_VOLUME="${GENERATOR_VOLUME:-small}" # tiny | small | medium | large
+GENERATOR_EXTRA_ARGS="${GENERATOR_EXTRA_ARGS:-}" # ví dụ: "--stream-max-inflight 1200"
+GENERATOR_PGHOST="${GENERATOR_PGHOST:-localhost}"
+GENERATOR_PGPORT="${GENERATOR_PGPORT:-5432}"
+GENERATOR_PGDB="${GENERATOR_PGDB:-ride_hailing_db}"
+GENERATOR_PGUSER="${GENERATOR_PGUSER:-user}"
+GENERATOR_PGPASSWORD="${GENERATOR_PGPASSWORD:-password}"
+KAFKA_BOOTSTRAP="${KAFKA_BOOTSTRAP:-kafka-1:19092,kafka-2:19092,kafka-3:19092}"
+KAFKA_CLI_CONTAINER="${KAFKA_CLI_CONTAINER:-kafka-1}"
+ES_USERNAME="${ES_USERNAME:-elastic}"
+ES_PASSWORD="${ELASTIC_PASSWORD:-changeme123}"
+# ================================================
+
+ROOT="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )"
+cd "$ROOT"
+
+if ! command -v docker >/dev/null 2>&1; then
+  echo "[FAIL] Docker chưa được cài đặt trong PATH" >&2
+  exit 1
+fi
+
+if ! docker info >/dev/null 2>&1; then
+  echo "[FAIL] Không thể kết nối Docker daemon. Hãy mở Docker Desktop/daemon trước khi chạy." >&2
+  exit 1
+fi
+
+info(){ echo -e "[\033[1;34mINFO\033[0m] $*"; }
+ok(){   echo -e "[\033[1;32m OK \033[0m] $*"; }
+err(){  echo -e "[\033[1;31mFAIL\033[0m] $*" 1>&2; }
+
+wait_for_http(){
+  local url="$1" timeout="${2:-120}"
+  shift 2 || true
+  local curl_args=("$@")
+  local start="$(date +%s)"
+  info "Đợi HTTP $url ..."
+  until curl -sSf "${curl_args[@]:-}" "$url" >/dev/null; do
+    sleep 2
+    (( $(date +%s) - start > timeout )) && { err "Timeout đợi $url"; return 1; }
+  done
+  ok "$url OK"
+}
+
+wait_for_topics(){
+  local timeout="${1:-180}"
+  shift
+  local required=("$@")
+  if [[ ${#required[@]} -eq 0 ]]; then
+    return 0
+  fi
+  ensure_running "$KAFKA_CLI_CONTAINER"
+  local start="$(date +%s)"
+  info "Đợi Kafka có các topic: ${required[*]} ..."
+  while true; do
+    local topic_list
+    topic_list=$(docker exec -i "$KAFKA_CLI_CONTAINER" kafka-topics --bootstrap-server "$KAFKA_BOOTSTRAP" --list 2>/dev/null || true)
+    local missing=()
+    local not_ready=()
+    for topic in "${required[@]}"; do
+      if ! grep -Fxq "$topic" <<<"$topic_list"; then
+        missing+=("$topic")
+        continue
+      fi
+      if ! docker exec -i "$KAFKA_CLI_CONTAINER" kafka-topics --bootstrap-server "$KAFKA_BOOTSTRAP" --describe --topic "$topic" >/dev/null 2>&1; then
+        not_ready+=("$topic")
+      fi
+    done
+    if [[ ${#missing[@]} -eq 0 && ${#not_ready[@]} -eq 0 ]]; then
+      ok "Kafka topics sẵn sàng"
+      return 0
+    fi
+    if (( $(date +%s) - start > timeout )); then
+      err "Timeout đợi Kafka topics: ${missing[*]} ${not_ready[*]}"
+      docker exec -i "$KAFKA_CLI_CONTAINER" kafka-topics --bootstrap-server "$KAFKA_BOOTSTRAP" --list || true
+      return 1
+    fi
+    sleep 5
+  done
+}
+
+# 0) In thông tin tổng quan
+info "Thư mục làm việc: $ROOT"
+info "Main class: $FLINK_MAIN_CLASS"
+info "Connector:  $CONNECTOR_NAME"
+info "ES index:   $ES_INDEX"
+info "Generator:  RUN=${RUN_GENERATOR}, MODE=${GENERATOR_MODE}, VOL=${GENERATOR_VOLUME}, SECONDS=${GENERATOR_SECONDS}"
+info "Generator DB: host=${GENERATOR_PGHOST} port=${GENERATOR_PGPORT} db=${GENERATOR_PGDB}"
+
+# 1) HẠ TOÀN BỘ STACK + XOÁ VOLUMES (RESET SẠCH)
+info "docker compose down -v ..."
 docker compose down -v || true
 ok "Đã down -v"
+
+# helper đảm bảo container không bị pause/stop
+ensure_running(){
+  local container="$1"
+  local state status paused
+  state=$(docker inspect -f '{{.State.Status}} {{.State.Paused}}' "$container" 2>/dev/null || echo "unknown false")
+  status="${state%% *}"
+  paused="${state##* }"
+  if [[ "$status" == "paused" || "$paused" == "true" ]]; then
+    info "Container $container đang paused → unpause"
+    docker unpause "$container" >/dev/null 2>&1 || true
+  fi
+  if [[ "$status" != "running" ]]; then
+    info "Khởi động container $container"
+    docker start "$container" >/dev/null 2>&1 || true
+  fi
+}
+
+ensure_topic(){
+  local topic="$1"
+  local attempts=0
+  info "Đảm bảo Kafka topic '${topic}' tồn tại..."
+  ensure_running "$KAFKA_CLI_CONTAINER"
+  while true; do
+    if docker exec -i "$KAFKA_CLI_CONTAINER" kafka-topics --bootstrap-server "$KAFKA_BOOTSTRAP" --describe --topic "$topic" >/dev/null 2>&1; then
+      ok "Topic '${topic}' đã tồn tại"
+      return 0
+    fi
+    if docker exec -i "$KAFKA_CLI_CONTAINER" kafka-topics --bootstrap-server "$KAFKA_BOOTSTRAP" --create --if-not-exists --topic "$topic" --partitions 3 --replication-factor 3 >/dev/null 2>&1; then
+      ok "Topic '${topic}' đã tạo"
+      return 0
+    fi
+    if (( attempts++ >= 30 )); then
+      err "Không thể tạo topic '${topic}'"
+      docker exec -i "$KAFKA_CLI_CONTAINER" kafka-topics --bootstrap-server "$KAFKA_BOOTSTRAP" --list || true
+      return 1
+    fi
+    sleep 3
+  done
+}
+
+wait_for_postgres(){
+  local container="$1" db="$2" user="$3" timeout="${4:-180}"
+  local start="$(date +%s)"
+  info "Đợi PostgreSQL $container ($db)..."
+  ensure_running "$container"
+  until docker exec "$container" pg_isready -d "$db" -U "$user" >/dev/null 2>&1; do
+    sleep 2
+    if (( $(date +%s) - start > timeout )); then
+      err "Timeout đợi $container";
+      docker logs "$container" | tail -n 40 >&2 || true
+      return 1
+    fi
+  done
+  ok "$container sẵn sàng"
+}
 
 # 2) LÊN LẠI STACK
 info "docker compose up -d ..."
@@ -7,17 +164,19 @@ docker compose up -d
 ok "Đã up -d"
 
 # 3) CHỜ CÁC DỊCH VỤ SẴN SÀNG
-wait_for_log postgres-source    "database system is ready to accept connections" 180
-wait_for_log postgres-reporting "database system is ready to accept connections" 180
-wait_for_http "http://localhost:9200" 180
+wait_for_postgres postgres-source    "ride_hailing_db" "user" 240
+wait_for_postgres postgres-reporting "reporting_db"   "user" 240
+
+wait_for_http "http://localhost:9200" 180 -u "${ES_USERNAME}:${ES_PASSWORD}"
 wait_for_http "http://localhost:8083/connectors" 180
+wait_for_http "http://localhost:5601/api/status" 180 -u "${ES_USERNAME}:${ES_PASSWORD}"
 
 # 4) TẠO MAPPING ES CHO driver_locations (geo_point)
 info "Tạo mapping Elasticsearch cho index ${ES_INDEX}..."
 # Xoá index cũ nếu tồn tại (idempotent)
-curl -s -X DELETE "http://localhost:9200/${ES_INDEX}" >/dev/null 2>&1 || true
+curl -s -u "${ES_USERNAME}:${ES_PASSWORD}" -X DELETE "http://localhost:9200/${ES_INDEX}" >/dev/null 2>&1 || true
 # Tạo index mới với mapping cần thiết
-curl -s -X PUT "http://localhost:9200/${ES_INDEX}" \
+curl -s -u "${ES_USERNAME}:${ES_PASSWORD}" -X PUT "http://localhost:9200/${ES_INDEX}" \
   -H 'Content-Type: application/json' \
   -d '{
     "mappings": { "properties": {
@@ -33,7 +192,7 @@ curl -s -X PUT "http://localhost:9200/${ES_INDEX}" \
 
 # Tạo index template cho timeseries driver_locations_timeseries-*
 info "Tạo index template cho driver_locations_timeseries-* ..."
-curl -s -X PUT "http://localhost:9200/_index_template/driver_locations_timeseries" \
+curl -s -u "${ES_USERNAME}:${ES_PASSWORD}" -X PUT "http://localhost:9200/_index_template/driver_locations_timeseries" \
   -H 'Content-Type: application/json' \
   -d '{
     "index_patterns": ["driver_locations_timeseries-*"] ,
@@ -57,6 +216,29 @@ curl -s -X PUT "http://localhost:9200/_index_template/driver_locations_timeserie
   }' >/dev/null
 ok "Mapping ES đã sẵn sàng"
 
+# 4b) TẠO INDEX PATTERN TRÊN KIBANA (nếu chưa có)
+ensure_kibana_index_pattern(){
+  local pattern="$1" title="${2:-$1}" time_field="${3:-@timestamp}"
+  local search_term="${title//\*/%2A}"
+  local search_url="http://localhost:5601/api/saved_objects/_find?type=index-pattern&search_fields=title&search=${search_term}"
+
+  if curl -s -u "${ES_USERNAME}:${ES_PASSWORD}" "${search_url}" -H "kbn-xsrf: reporting-init" -H "Content-Type: application/json" \
+    | grep -q '"total"[[:space:]]*:[[:space:]]*[1-9]'; then
+    ok "Kibana index pattern '${title}' đã tồn tại"
+    return 0
+  fi
+
+  info "Tạo Kibana index pattern '${title}'..."
+  curl -s -u "${ES_USERNAME}:${ES_PASSWORD}" -X POST "http://localhost:5601/api/saved_objects/index-pattern" \
+    -H "kbn-xsrf: reporting-init" \
+    -H "Content-Type: application/json" \
+    -d "{\"attributes\":{\"title\":\"${title}\",\"timeFieldName\":\"${time_field}\"}}" >/dev/null
+  ok "Kibana index pattern '${title}' đã tạo"
+}
+
+ensure_kibana_index_pattern "${ES_INDEX}" "${ES_INDEX}" "@timestamp"
+ensure_kibana_index_pattern "driver_locations_timeseries-*" "driver_locations_timeseries-*" "@timestamp"
+
 # 5) ĐĂNG KÝ DEBEZIUM CONNECTOR
 info "Đăng ký Kafka Connect Debezium..."
 # Xoá connector cũ (nếu có) cho sạch
@@ -73,6 +255,19 @@ sleep 2
 curl -s "http://localhost:8083/connectors/${CONNECTOR_NAME}/status" | sed -n '1,120p'
 ok "Connector đã đăng ký (kỳ vọng RUNNING)"
 
+# đảm bảo các topic CDC đã được tạo trước khi Flink kết nối
+ensure_topic "ridehailing.public.booking"
+ensure_topic "ridehailing.public.driver"
+ensure_topic "ridehailing.public.driver_location"
+ensure_topic "ridehailing.public.passenger"
+
+# chờ Debezium khởi tạo các topic CDC trước khi submit Flink job
+wait_for_topics 240 \
+  ridehailing.public.booking \
+  ridehailing.public.driver \
+  ridehailing.public.driver_location \
+  ridehailing.public.passenger
+
 # 6) BUILD FLINK JAR
 info "Build Flink JAR..."
 pushd flink-job >/dev/null
@@ -80,11 +275,69 @@ mvn -U -DskipTests clean package
 popd >/dev/null
 HOST_JAR="$(ls -1t "$ROOT/flink-job/target/"*.jar 2>/dev/null | head -n1 || true)"
 [[ -n "$HOST_JAR" ]] || { err "Không tìm thấy JAR trong flink-job/target. Build có thể fail."; exit 1; }
-@@ -125,58 +153,79 @@ JAR_BASENAME="$(basename "$HOST_JAR")"
+ok "Build xong: $(basename "$HOST_JAR")"
+
+info "Khởi động Flink JM/TM..."
+docker compose up -d flink-jobmanager flink-taskmanager
+
+# đợi JobManager ổn định
+info "Chờ JobManager ổn định..."
+for i in {1..30}; do
+  if docker inspect -f '{{.State.Running}} {{.State.Restarting}}' flink-jobmanager 2>/dev/null | grep -q '^true false$'; then
+    break
+  fi
+  sleep 1
+done
+
+ensure_container_path(){
+  local container="$1" path="$2"
+  docker exec -i "$container" sh -lc "mkdir -p '$path' && chown -R flink:flink '$path'"
+}
+
+wait_for_job_running(){
+  local job_id="$1" timeout="${2:-120}"
+  local start="$(date +%s)"
+  info "Chờ job ${job_id} chuyển sang RUNNING..."
+  while true; do
+    local status_line
+    status_line=$(docker exec -i flink-jobmanager flink list | grep "$job_id" || true)
+    if [[ -n "$status_line" ]]; then
+      if [[ "$status_line" == *"(RUNNING)"* ]]; then
+        ok "Job ${job_id} đang RUNNING"
+        return 0
+      fi
+      if [[ "$status_line" == *"(FAILED)"* || "$status_line" == *"(FAILING)"* || "$status_line" == *"(CANCELED)"* ]]; then
+      err "Job ${job_id} gặp lỗi: ${status_line}"
+      docker logs --tail 200 flink-jobmanager || true
+      return 1
+      fi
+    fi
+    if (( $(date +%s) - start > timeout )); then
+      err "Job ${job_id} chưa RUNNING sau ${timeout}s"
+      docker exec -i flink-jobmanager flink list || true
+      docker logs --tail 200 flink-jobmanager || true
+      return 1
+    fi
+    sleep 5
+  done
+}
+
+# chuẩn bị thư mục lưu checkpoint/savepoint và usrlib
+info "Chuẩn bị thư mục Flink trong container..."
+ensure_container_path flink-jobmanager /opt/flink/usrlib
+ensure_container_path flink-jobmanager /flink-checkpoints
+ensure_container_path flink-taskmanager /flink-checkpoints
+
+# copy JAR vào usrlib
+HOST_JAR="${HOST_JAR:?missing host jar}"
+JAR_BASENAME="$(basename "$HOST_JAR")"
 JAR_IN_CONTAINER="/opt/flink/usrlib/${JAR_BASENAME}"
 
-info "Copy JAR vào $JAR_IN_CONTAINER ..."
-docker cp "$HOST_JAR" "flink-jobmanager:${JAR_IN_CONTAINER}" || { err "docker cp thất bại"; exit 1; }
+TMP_JAR_PATH="/tmp/${JAR_BASENAME}"
+
+info "Copy JAR vào $TMP_JAR_PATH rồi di chuyển tới $JAR_IN_CONTAINER ..."
+docker cp "$HOST_JAR" "flink-jobmanager:${TMP_JAR_PATH}" || { err "docker cp thất bại"; exit 1; }
+docker exec -i flink-jobmanager sh -lc "mkdir -p /opt/flink/usrlib && mv '${TMP_JAR_PATH}' '${JAR_IN_CONTAINER}'"
 
 # xác minh JAR tồn tại
 info "Xác minh JAR trong container..."
@@ -102,32 +355,54 @@ if docker exec -i flink-jobmanager flink list | grep -q "RUNNING"; then
 fi
 
 info "Submit job: ${FLINK_MAIN_CLASS} với $JAR_IN_CONTAINER"
-docker exec -i flink-jobmanager flink run -d -c "${FLINK_MAIN_CLASS}" "${JAR_IN_CONTAINER}" \
-  || { err "Submit job thất bại. Kiểm tra lại $JAR_IN_CONTAINER"; exit 1; }
+JOB_SUBMIT_OUTPUT=$(docker exec -i flink-jobmanager flink run -d -c "${FLINK_MAIN_CLASS}" "${JAR_IN_CONTAINER}" 2>&1) \
+  || { err "Submit job thất bại. Kiểm tra lại $JAR_IN_CONTAINER"; echo "$JOB_SUBMIT_OUTPUT" >&2; exit 1; }
+echo "$JOB_SUBMIT_OUTPUT"
+JOB_ID=$(echo "$JOB_SUBMIT_OUTPUT" | awk '/Job has been submitted with JobID/ {print $NF}' | tail -n1)
+if [[ -n "$JOB_ID" ]]; then
+  wait_for_job_running "$JOB_ID" 180
+else
+  info "Không thể lấy JobID từ log submit, bỏ qua bước đợi RUNNING"
+fi
 
 docker exec -i flink-jobmanager flink list
 ok "Đã submit Flink job thành công"
-docker exec -it kafka kafka-console-consumer --bootstrap-server kafka:19092 \
-  --topic ridehailing.public.booking --from-beginning --max-messages 3
+
+if [[ "${RUN_GENERATOR}" != "true" ]]; then
+  info "Smoke test topic booking (timeout 5s)..."
+  docker exec "$KAFKA_CLI_CONTAINER" kafka-console-consumer --bootstrap-server "$KAFKA_BOOTSTRAP" \
+    --topic ridehailing.public.booking --from-beginning --max-messages 1 --timeout-ms 5000 >/dev/null 2>&1 \
+    || info "Topic chưa có dữ liệu (có thể do generator chưa chạy)"
+fi
 
 # 9) (TUỲ CHỌN) CHẠY DATA GENERATOR
 if [[ "${RUN_GENERATOR}" == "true" ]]; then
   info "Cài lib & chạy data generator..."
   python3 -m pip install --upgrade pip >/dev/null
   python3 -m pip install -q psycopg2-binary Faker >/dev/null
+  CMD=(python3 generator/data_generator.py --mode "${GENERATOR_MODE}" --volume "${GENERATOR_VOLUME}" \
+    --pg-host "${GENERATOR_PGHOST}" --pg-port "${GENERATOR_PGPORT}" \
+    --pg-db "${GENERATOR_PGDB}" --pg-user "${GENERATOR_PGUSER}" \
+    --pg-password "${GENERATOR_PGPASSWORD}")
+  if [[ -n "${GENERATOR_EXTRA_ARGS}" ]]; then
+    # shellcheck disable=SC2206
+    EXTRA_ARGS=(${GENERATOR_EXTRA_ARGS})
+    CMD+=("${EXTRA_ARGS[@]}")
+  fi
+  info "Generator cmd: ${CMD[*]}"
   if (( GENERATOR_SECONDS > 0 )); then
     info "Generator chạy ${GENERATOR_SECONDS}s..."
-    timeout "${GENERATOR_SECONDS}" python3 generator/data_generator.py || true
+    timeout "${GENERATOR_SECONDS}" "${CMD[@]}" || true
   else
     info "Generator đang chạy (Ctrl+C để dừng ở cửa sổ này)..."
-    python3 generator/data_generator.py
+    "${CMD[@]}"
   fi
 fi
 
 # 10) KIỂM TRA NHANH ES & REPORTING
 info "Kiểm tra nhanh Elasticsearch..."
-curl -s "http://localhost:9200/${ES_INDEX}/_count" && echo
-curl -s "http://localhost:9200/${ES_INDEX}/_search?size=1" | sed -n '1,120p' || true
+curl -s -u "${ES_USERNAME}:${ES_PASSWORD}" "http://localhost:9200/${ES_INDEX}/_count" && echo
+curl -s -u "${ES_USERNAME}:${ES_PASSWORD}" "http://localhost:9200/${ES_INDEX}/_search?size=1" | sed -n '1,120p' || true
 
 run_reporting_query(){
   local sql="$1"
