@@ -62,7 +62,7 @@ public class RideHailingDataProcessor {
     // Kafka
     static final String KAFKA_BOOTSTRAP = System.getenv().getOrDefault(
             "KAFKA_BOOTSTRAP",
-            "kafka-1:19092,kafka-2:19092,kafka-3:19092");
+            "kafka-1:19092");
     static final String TOPIC_BOOKING = "ridehailing.public.booking";
     static final String TOPIC_DRIVER_LOCATION = "ridehailing.public.driver_location";
     static final String TOPIC_PASSENGER = "ridehailing.public.passenger";
@@ -201,42 +201,42 @@ public class RideHailingDataProcessor {
         OffsetsInitializer passengerOffsets = offsetsInitializer("FLINK_PASSENGER_OFFSET_MODE", "LATEST");
         OffsetsInitializer driverOffsets = offsetsInitializer("FLINK_DRIVER_OFFSET_MODE", "LATEST");
 
-KafkaSource<ObjectNode> bookingSource = KafkaSource.<ObjectNode>builder()
-.setBootstrapServers(KAFKA_BOOTSTRAP)
-.setTopics(TOPIC_BOOKING)
-.setGroupId("flink-booking-realtime")
-.setStartingOffsets(bookingOffsets)
-.setPartitionDiscoveryInterval(Duration.ofSeconds(15))
-.setProperty("allow.auto.create.topics", "true")
-.setValueOnlyDeserializer(new JsonNodeDeserializationSchema())
-.build();
+        KafkaSource<ObjectNode> bookingSource = KafkaSource.<ObjectNode>builder()
+                .setBootstrapServers(KAFKA_BOOTSTRAP)
+                .setTopics(TOPIC_BOOKING)
+                .setGroupId("flink-booking-realtime")
+                .setStartingOffsets(bookingOffsets)
+                .setPartitionDiscoveryInterval(Duration.ofSeconds(15))
+                .setProperty("allow.auto.create.topics", "true")
+                .setValueOnlyDeserializer(new JsonNodeDeserializationSchema())
+                .build();
 
-KafkaSource<ObjectNode> driverLocSource = KafkaSource.<ObjectNode>builder()
-.setBootstrapServers(KAFKA_BOOTSTRAP)
-.setTopics(TOPIC_DRIVER_LOCATION)
-.setGroupId("flink-driverloc-realtime")
-.setStartingOffsets(driverLocOffsets)
-.setPartitionDiscoveryInterval(Duration.ofSeconds(15))
-.setProperty("allow.auto.create.topics", "true")
-.setValueOnlyDeserializer(new JsonNodeDeserializationSchema())
-.build();
+        KafkaSource<ObjectNode> driverLocSource = KafkaSource.<ObjectNode>builder()
+                .setBootstrapServers(KAFKA_BOOTSTRAP)
+                .setTopics(TOPIC_DRIVER_LOCATION)
+                .setGroupId("flink-driverloc-realtime")
+                .setStartingOffsets(driverLocOffsets)
+                .setPartitionDiscoveryInterval(Duration.ofSeconds(15))
+                .setProperty("allow.auto.create.topics", "true")
+                .setValueOnlyDeserializer(new JsonNodeDeserializationSchema())
+                .build();
 
-KafkaSource<ObjectNode> passengerSource = KafkaSource.<ObjectNode>builder()
-.setBootstrapServers(KAFKA_BOOTSTRAP)
-.setTopics(TOPIC_PASSENGER)
-.setGroupId("flink-passenger-realtime")
-.setStartingOffsets(passengerOffsets)
-.setPartitionDiscoveryInterval(Duration.ofSeconds(15))
-.setProperty("allow.auto.create.topics", "true")
-.setValueOnlyDeserializer(new JsonNodeDeserializationSchema())
-.build();
+        KafkaSource<ObjectNode> passengerSource = KafkaSource.<ObjectNode>builder()
+                .setBootstrapServers(KAFKA_BOOTSTRAP)
+                .setTopics(TOPIC_PASSENGER)
+                .setGroupId("flink-passenger-realtime")
+                .setStartingOffsets(passengerOffsets)
+                .setPartitionDiscoveryInterval(Duration.ofSeconds(15))
+                .setProperty("allow.auto.create.topics", "true")
+                .setValueOnlyDeserializer(new JsonNodeDeserializationSchema())
+                .build();
 
-KafkaSource<ObjectNode> driverSource = KafkaSource.<ObjectNode>builder()
-.setBootstrapServers(KAFKA_BOOTSTRAP)
-.setTopics(TOPIC_DRIVER)
-.setGroupId("flink-driver-registrations")
-.setStartingOffsets(driverOffsets)
-.setPartitionDiscoveryInterval(Duration.ofSeconds(15))
+        KafkaSource<ObjectNode> driverSource = KafkaSource.<ObjectNode>builder()
+                .setBootstrapServers(KAFKA_BOOTSTRAP)
+                .setTopics(TOPIC_DRIVER)
+                .setGroupId("flink-driver-registrations")
+                .setStartingOffsets(driverOffsets)
+                .setPartitionDiscoveryInterval(Duration.ofSeconds(15))
                 .setProperty("allow.auto.create.topics", "true")
                 .setValueOnlyDeserializer(new JsonNodeDeserializationSchema())
                 .build();

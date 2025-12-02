@@ -587,3 +587,6 @@ SELECT
     MAX(received_at),
     EXTRACT(EPOCH FROM (now() - MAX(received_at)))::INT
 FROM mart.booking_route_segments;
+
+-- Phân quyền đọc cho BI/analyst (tùy chọn)
+-- GRANT USAGE ON SCHEMA mart TO analyst;

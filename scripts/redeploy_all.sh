@@ -16,10 +16,6 @@ GENERATOR_PGPORT="${GENERATOR_PGPORT:-5432}"
 GENERATOR_PGDB="${GENERATOR_PGDB:-ride_hailing_db}"
 GENERATOR_PGUSER="${GENERATOR_PGUSER:-user}"
 GENERATOR_PGPASSWORD="${GENERATOR_PGPASSWORD:-password}"
-KAFKA_BOOTSTRAP="${KAFKA_BOOTSTRAP:-kafka-1:19092,kafka-2:19092,kafka-3:19092}"
-KAFKA_CLI_CONTAINER="${KAFKA_CLI_CONTAINER:-kafka-1}"
-ES_USERNAME="${ES_USERNAME:-elastic}"
-ES_PASSWORD="${ELASTIC_PASSWORD:-changeme123}"
 # ================================================
 
 ROOT="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )"
@@ -41,11 +37,9 @@ err(){  echo -e "[\033[1;31mFAIL\033[0m] $*" 1>&2; }
 
 wait_for_http(){
   local url="$1" timeout="${2:-120}"
-  shift 2 || true
-  local curl_args=("$@")
   local start="$(date +%s)"
   info "Đợi HTTP $url ..."
-  until curl -sSf "${curl_args[@]:-}" "$url" >/dev/null; do
+  until curl -sSf "$url" >/dev/null; do
     sleep 2
     (( $(date +%s) - start > timeout )) && { err "Timeout đợi $url"; return 1; }
   done
@@ -59,12 +53,12 @@ wait_for_topics(){
   if [[ ${#required[@]} -eq 0 ]]; then
     return 0
   fi
-  ensure_running "$KAFKA_CLI_CONTAINER"
+  ensure_running kafka
   local start="$(date +%s)"
   info "Đợi Kafka có các topic: ${required[*]} ..."
   while true; do
     local topic_list
-    topic_list=$(docker exec -i "$KAFKA_CLI_CONTAINER" kafka-topics --bootstrap-server "$KAFKA_BOOTSTRAP" --list 2>/dev/null || true)
+    topic_list=$(docker exec -i kafka kafka-topics --bootstrap-server kafka:19092 --list 2>/dev/null || true)
     local missing=()
     local not_ready=()
     for topic in "${required[@]}"; do
@@ -72,7 +66,7 @@ wait_for_topics(){
         missing+=("$topic")
         continue
       fi
-      if ! docker exec -i "$KAFKA_CLI_CONTAINER" kafka-topics --bootstrap-server "$KAFKA_BOOTSTRAP" --describe --topic "$topic" >/dev/null 2>&1; then
+      if ! docker exec -i kafka kafka-topics --bootstrap-server kafka:19092 --describe --topic "$topic" >/dev/null 2>&1; then
         not_ready+=("$topic")
       fi
     done
@@ -82,7 +76,7 @@ wait_for_topics(){
     fi
     if (( $(date +%s) - start > timeout )); then
       err "Timeout đợi Kafka topics: ${missing[*]} ${not_ready[*]}"
-      docker exec -i "$KAFKA_CLI_CONTAINER" kafka-topics --bootstrap-server "$KAFKA_BOOTSTRAP" --list || true
+      docker exec -i kafka kafka-topics --bootstrap-server kafka:19092 --list || true
       return 1
     fi
     sleep 5
@@ -123,19 +117,19 @@ ensure_topic(){
   local topic="$1"
   local attempts=0
   info "Đảm bảo Kafka topic '${topic}' tồn tại..."
-  ensure_running "$KAFKA_CLI_CONTAINER"
+  ensure_running kafka
   while true; do
-    if docker exec -i "$KAFKA_CLI_CONTAINER" kafka-topics --bootstrap-server "$KAFKA_BOOTSTRAP" --describe --topic "$topic" >/dev/null 2>&1; then
+    if docker exec -i kafka kafka-topics --bootstrap-server kafka:19092 --describe --topic "$topic" >/dev/null 2>&1; then
       ok "Topic '${topic}' đã tồn tại"
       return 0
     fi
-    if docker exec -i "$KAFKA_CLI_CONTAINER" kafka-topics --bootstrap-server "$KAFKA_BOOTSTRAP" --create --if-not-exists --topic "$topic" --partitions 3 --replication-factor 3 >/dev/null 2>&1; then
+    if docker exec -i kafka kafka-topics --bootstrap-server kafka:19092 --create --if-not-exists --topic "$topic" --partitions 1 --replication-factor 1 >/dev/null 2>&1; then
       ok "Topic '${topic}' đã tạo"
       return 0
     fi
     if (( attempts++ >= 30 )); then
       err "Không thể tạo topic '${topic}'"
-      docker exec -i "$KAFKA_CLI_CONTAINER" kafka-topics --bootstrap-server "$KAFKA_BOOTSTRAP" --list || true
+      docker exec -i kafka kafka-topics --bootstrap-server kafka:19092 --list || true
       return 1
     fi
     sleep 3
@@ -167,16 +161,16 @@ ok "Đã up -d"
 wait_for_postgres postgres-source    "ride_hailing_db" "user" 240
 wait_for_postgres postgres-reporting "reporting_db"   "user" 240
 
-wait_for_http "http://localhost:9200" 180 -u "${ES_USERNAME}:${ES_PASSWORD}"
+wait_for_http "http://localhost:9200" 180
 wait_for_http "http://localhost:8083/connectors" 180
-wait_for_http "http://localhost:5601/api/status" 180 -u "${ES_USERNAME}:${ES_PASSWORD}"
+wait_for_http "http://localhost:5601/api/status" 180
 
 # 4) TẠO MAPPING ES CHO driver_locations (geo_point)
 info "Tạo mapping Elasticsearch cho index ${ES_INDEX}..."
 # Xoá index cũ nếu tồn tại (idempotent)
-curl -s -u "${ES_USERNAME}:${ES_PASSWORD}" -X DELETE "http://localhost:9200/${ES_INDEX}" >/dev/null 2>&1 || true
+curl -s -X DELETE "http://localhost:9200/${ES_INDEX}" >/dev/null 2>&1 || true
 # Tạo index mới với mapping cần thiết
-curl -s -u "${ES_USERNAME}:${ES_PASSWORD}" -X PUT "http://localhost:9200/${ES_INDEX}" \
+curl -s -X PUT "http://localhost:9200/${ES_INDEX}" \
   -H 'Content-Type: application/json' \
   -d '{
     "mappings": { "properties": {
@@ -192,7 +186,7 @@ curl -s -u "${ES_USERNAME}:${ES_PASSWORD}" -X PUT "http://localhost:9200/${ES_IN
 
 # Tạo index template cho timeseries driver_locations_timeseries-*
 info "Tạo index template cho driver_locations_timeseries-* ..."
-curl -s -u "${ES_USERNAME}:${ES_PASSWORD}" -X PUT "http://localhost:9200/_index_template/driver_locations_timeseries" \
+curl -s -X PUT "http://localhost:9200/_index_template/driver_locations_timeseries" \
   -H 'Content-Type: application/json' \
   -d '{
     "index_patterns": ["driver_locations_timeseries-*"] ,
@@ -222,14 +216,14 @@ ensure_kibana_index_pattern(){
   local search_term="${title//\*/%2A}"
   local search_url="http://localhost:5601/api/saved_objects/_find?type=index-pattern&search_fields=title&search=${search_term}"
 
-  if curl -s -u "${ES_USERNAME}:${ES_PASSWORD}" "${search_url}" -H "kbn-xsrf: reporting-init" -H "Content-Type: application/json" \
+  if curl -s "${search_url}" -H "kbn-xsrf: reporting-init" -H "Content-Type: application/json" \
     | grep -q '"total"[[:space:]]*:[[:space:]]*[1-9]'; then
     ok "Kibana index pattern '${title}' đã tồn tại"
     return 0
   fi
 
   info "Tạo Kibana index pattern '${title}'..."
-  curl -s -u "${ES_USERNAME}:${ES_PASSWORD}" -X POST "http://localhost:5601/api/saved_objects/index-pattern" \
+  curl -s -X POST "http://localhost:5601/api/saved_objects/index-pattern" \
     -H "kbn-xsrf: reporting-init" \
     -H "Content-Type: application/json" \
     -d "{\"attributes\":{\"title\":\"${title}\",\"timeFieldName\":\"${time_field}\"}}" >/dev/null
@@ -370,7 +364,7 @@ ok "Đã submit Flink job thành công"
 
 if [[ "${RUN_GENERATOR}" != "true" ]]; then
   info "Smoke test topic booking (timeout 5s)..."
-  docker exec "$KAFKA_CLI_CONTAINER" kafka-console-consumer --bootstrap-server "$KAFKA_BOOTSTRAP" \
+  docker exec kafka kafka-console-consumer --bootstrap-server kafka:19092 \
     --topic ridehailing.public.booking --from-beginning --max-messages 1 --timeout-ms 5000 >/dev/null 2>&1 \
     || info "Topic chưa có dữ liệu (có thể do generator chưa chạy)"
 fi
@@ -401,8 +395,8 @@ fi
 
 # 10) KIỂM TRA NHANH ES & REPORTING
 info "Kiểm tra nhanh Elasticsearch..."
-curl -s -u "${ES_USERNAME}:${ES_PASSWORD}" "http://localhost:9200/${ES_INDEX}/_count" && echo
-curl -s -u "${ES_USERNAME}:${ES_PASSWORD}" "http://localhost:9200/${ES_INDEX}/_search?size=1" | sed -n '1,120p' || true
+curl -s "http://localhost:9200/${ES_INDEX}/_count" && echo
+curl -s "http://localhost:9200/${ES_INDEX}/_search?size=1" | sed -n '1,120p' || true
 
 run_reporting_query(){
   local sql="$1"
