@@ -38,7 +38,7 @@ bash scripts/redeploy_all.sh
 
 > Script sẽ tự tạo Elasticsearch index `driver_locations`, template `driver_locations_timeseries-*` **và** data view (index pattern) tương ứng trong Kibana (`driver_locations` và `driver_locations_timeseries-*`). Sau khi chạy xong bạn có thể mở Kibana → *Stack Management → Data Views* để xác nhận đã có 2 data view sẵn sàng cho việc dựng map/dashboard.
 
-> Hạ tầng mặc định chạy cụm Kafka 3 broker (`kafka-1`..`kafka-3`) kèm Schema Registry (`schema-registry:8081`). Elasticsearch đã bật security (basic auth), user mặc định `elastic` với mật khẩu lấy từ biến môi trường `ELASTIC_PASSWORD` (mặc định `changeme123`); Kibana được cấu hình sẵn để kết nối bằng tài khoản này.
+> Hạ tầng mặc định chạy cụm Kafka 3 broker (`kafka-1`..`kafka-3`) kèm Schema Registry (mặc định bind ra host `18081`). Elasticsearch đã bật security (basic auth), user mặc định `elastic` với mật khẩu lấy từ biến môi trường `ELASTIC_PASSWORD` (mặc định `changeme123`); Kibana được cấu hình sẵn để kết nối bằng tài khoản này.
 
 ### 2. Kịch bản thủ công từng bước
 
