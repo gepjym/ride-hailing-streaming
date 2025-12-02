@@ -231,6 +231,8 @@ CREATE TABLE public.driver_location (
 -- Chỉ mục
 CREATE INDEX IF NOT EXISTS idx_driver_location_gist  ON public.driver_location USING gist (coordinates);
 CREATE INDEX IF NOT EXISTS idx_driver_location_btree ON public.driver_location ("driverId", availability);
+-- Đảm bảo mỗi tài xế chỉ có một bản ghi vị trí hiện thời
+CREATE UNIQUE INDEX IF NOT EXISTS ux_driver_location_driver ON public.driver_location ("driverId");
 
 -- Cập nhật "updatedAt" tự động khi UPDATE
 CREATE OR REPLACE FUNCTION set_updated_at_driver_location()

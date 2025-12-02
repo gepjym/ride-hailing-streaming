@@ -9,11 +9,12 @@
     "database.password": "password",
     "database.dbname": "ride_hailing_db",
     "schema.include.list": "public",
-    "table.include.list": "public.booking,public.driver_location",
+    "table.include.list": "public.booking,public.driver_location,public.passenger,public.driver",
     "plugin.name": "pgoutput",
     "publication.autocreate.mode": "filtered",
+    "publication.name": "debezium_pub_ridehailing",
     "slot.name": "debezium_slot",
-    "slot.drop.on.stop": "true",
+    "slot.drop.on.stop": "false",
     "tombstones.on.delete": "false",
     "include.schema.changes": "false",
     "binary.handling.mode": "base64",
@@ -22,6 +23,10 @@
     "key.converter": "org.apache.kafka.connect.json.JsonConverter",
     "key.converter.schemas.enable": "false",
     "value.converter": "org.apache.kafka.connect.json.JsonConverter",
-    "value.converter.schemas.enable": "false"
+    "value.converter.schemas.enable": "false",
+    "decimal.handling.mode": "string",
+    "snapshot.mode": "initial",
+    "topic.creation.default.replication.factor": "3",
+    "topic.creation.default.partitions": "3"
   }
 }
