@@ -561,31 +561,35 @@ GROUP BY booking_id, segment_type;
 DROP VIEW IF EXISTS mart.vw_data_freshness;
 CREATE VIEW mart.vw_data_freshness AS
 SELECT
-    'fact_metric_bucket' AS object_name,
+    'fact_metric_bucket' AS source_name,
     MAX(last_event_at)    AS last_event_time,
     MAX(last_ingested_at) AS last_ingested_at,
-    EXTRACT(EPOCH FROM (now() - MAX(last_ingested_at)))::INT AS seconds_since_last_ingest
+    EXTRACT(EPOCH FROM (now() - MAX(last_ingested_at)))::INT AS ingestion_lag_seconds,
+    EXTRACT(EPOCH FROM (MAX(last_ingested_at) - MAX(last_event_at)))::INT AS processing_lag_seconds
 FROM mart.fact_metric_bucket
 UNION ALL
 SELECT
-    'latest_metric_snapshot',
+    'latest_metric_snapshot' AS source_name,
     MAX(event_time),
     MAX(last_ingested_at),
-    EXTRACT(EPOCH FROM (now() - MAX(last_ingested_at)))::INT
+    EXTRACT(EPOCH FROM (now() - MAX(last_ingested_at)))::INT,
+    EXTRACT(EPOCH FROM (MAX(last_ingested_at) - MAX(event_time)))::INT
 FROM mart.latest_metric_snapshot
 UNION ALL
 SELECT
-    'driver_location_timeseries',
+    'driver_location_timeseries' AS source_name,
     MAX(event_time),
     MAX(received_at),
-    EXTRACT(EPOCH FROM (now() - MAX(received_at)))::INT
+    EXTRACT(EPOCH FROM (now() - MAX(received_at)))::INT,
+    EXTRACT(EPOCH FROM (MAX(received_at) - MAX(event_time)))::INT
 FROM mart.driver_location_timeseries
 UNION ALL
 SELECT
-    'booking_route_segments',
+    'booking_route_segments' AS source_name,
     MAX(event_time),
     MAX(received_at),
-    EXTRACT(EPOCH FROM (now() - MAX(received_at)))::INT
+    EXTRACT(EPOCH FROM (now() - MAX(received_at)))::INT,
+    EXTRACT(EPOCH FROM (MAX(received_at) - MAX(event_time)))::INT
 FROM mart.booking_route_segments;
 
 -- Phân quyền đọc cho BI/analyst (tùy chọn)

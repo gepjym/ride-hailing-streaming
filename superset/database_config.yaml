@@ -1,0 +1,11 @@
+databases:
+  - database_name: "Reporting DB"
+    sqlalchemy_uri: "postgresql://user:password@postgres-reporting:5432/reporting_db"
+    extra: |
+      {
+        "metadata_params": {},
+        "engine_params": {
+          "pool_size": 10,
+          "max_overflow": 20
+        }
+      }
