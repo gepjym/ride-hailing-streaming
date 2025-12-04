@@ -3,13 +3,13 @@
 ## Run
 ### -1. Preflight (kiểm tra môi trường)
 
-Trước khi chạy, đảm bảo máy có Docker/Compose và các port chính còn trống:
+Luôn chạy bước này trước để tránh lỗi thiếu Docker daemon/CLI hoặc đụng port (Kafka/Elasticsearch/Postgres/Superset/Kibana/Flink):
 
 ```bash
 ./ops/preflight_check.sh
 ```
 
-Script sẽ báo chi tiết nếu thiếu Docker daemon, thiếu CLI hoặc bị trùng port (Kafka/Elasticsearch/Postgres/Superset/Kibana/Flink).
+Script sẽ báo chi tiết và dừng sớm nếu phát hiện thiếu thành phần nào, sau đó bạn mới chuyển sang bước quick start ở dưới.
 
 ### 0. One-command quick start (full stack + generator + health checks)
 
