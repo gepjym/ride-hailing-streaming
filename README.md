@@ -1,6 +1,34 @@
 # Ride-hailing Streaming (Postgres → Debezium → Kafka → Flink → Postgres/ES)
 
 ## Run
+### -1. Preflight (kiểm tra môi trường)
+
+Luôn chạy bước này trước để tránh lỗi thiếu Docker daemon/CLI hoặc đụng port (Kafka/Elasticsearch/Postgres/Superset/Kibana/Flink):
+
+```bash
+./ops/preflight_check.sh
+```
+
+Script sẽ báo chi tiết và dừng sớm nếu phát hiện thiếu thành phần nào, sau đó bạn mới chuyển sang bước quick start ở dưới.
+
+### 0. One-command quick start (full stack + generator + health checks)
+
+Để chạy toàn bộ pipeline từ hạ tầng đến stream dữ liệu và kiểm tra health/SLA, dùng:
+
+```bash
+export ELASTIC_PASSWORD=changeme123   # nếu bạn bật security cho Elasticsearch/Kibana
+RUN_GENERATOR=true GENERATOR_SECONDS=600 GENERATOR_VOLUME=small \
+bash scripts/run_end_to_end.sh
+```
+
+Tuỳ chọn:
+
+* `RUN_CORRECTNESS_TESTS=true` để chạy `tests/correctness_test.py` sau khi stack lên.
+* `RUN_FAULT_TESTS=true` để chạy kịch bản resilience trong `tests/fault_tolerance_test.sh`.
+* `RUN_PERF_TESTS=true` để chạy `tests/performance_test.py` (tốn thời gian hơn).
+
+Script này gọi lại `scripts/redeploy_all.sh` (làm sạch volumes, dựng stack, deploy Flink, mapping Elasticsearch, đăng ký Debezium, bật generator theo cấu hình), rồi chạy `ops/check_health.sh` và `ops/check_sla_latency.sh`. Superset sẽ lên ở `http://localhost:8088`, Kibana ở `http://localhost:5601`.
+
 ### 1. Kịch bản "Full redeploy + stream" (khuyến nghị)
 
 Script dưới đây gom toàn bộ các bước: hạ/khởi động lại Docker Compose, tạo mapping Elasticsearch, đăng ký Debezium, build & deploy Flink, sau đó bật generator chế độ **stream**. Chỉ cần chắc chắn Docker Desktop/daemon đã chạy trước khi thực thi.

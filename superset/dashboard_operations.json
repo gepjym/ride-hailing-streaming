@@ -1,0 +1,36 @@
+{
+  "dashboard_title": "Operations Overview - Realtime",
+  "position_json": {
+    "GRID_ID": {
+      "type": "GRID",
+      "children": [
+        "HEADER-1",
+        "ROW-1",
+        "ROW-2",
+        "ROW-3"
+      ]
+    },
+    "HEADER-1": {
+      "type": "HEADER",
+      "meta": {
+        "text": "\ud83d\ude97 Ride-Hailing Operations Dashboard"
+      }
+    },
+    "ROW-1": {
+      "type": "ROW",
+      "children": ["CHART-1", "CHART-2", "CHART-3", "CHART-4"]
+    },
+    "CHART-1": {
+      "type": "CHART",
+      "meta": {
+        "chartId": 1,
+        "width": 3,
+        "height": 4
+      }
+    }
+  },
+  "metadata": {
+    "color_scheme": "supersetColors",
+    "refresh_frequency": 30
+  }
+}

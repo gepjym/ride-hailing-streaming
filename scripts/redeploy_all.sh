@@ -86,10 +86,10 @@ info "ES index:   $ES_INDEX"
 info "Generator:  RUN=${RUN_GENERATOR}, MODE=${GENERATOR_MODE}, VOL=${GENERATOR_VOLUME}, SECONDS=${GENERATOR_SECONDS}"
 info "Generator DB: host=${GENERATOR_PGHOST} port=${GENERATOR_PGPORT} db=${GENERATOR_PGDB}"
 
-# 1) HẠ TOÀN BỘ STACK + XOÁ VOLUMES (RESET SẠCH)
-info "docker compose down -v ..."
-docker compose down -v || true
-ok "Đã down -v"
+# 1) HẠ TOÀN BỘ STACK (GIỮ NGUYÊN VOLUME)
+info "docker compose down ..."
+docker compose down || true
+ok "Đã down (data/volumes giữ nguyên)"
 
 # helper đảm bảo container không bị pause/stop
 ensure_running(){
