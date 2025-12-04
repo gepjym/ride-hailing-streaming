@@ -1,6 +1,7 @@
 # Ride-hailing Streaming (Postgres → Debezium → Kafka → Flink → Postgres/ES)
 
 ## Run
+
 ### -1. Preflight (kiểm tra môi trường)
 
 Luôn chạy bước này trước để tránh lỗi thiếu Docker daemon/CLI hoặc đụng port (Kafka/Elasticsearch/Postgres/Superset/Kibana/Flink):
@@ -10,6 +11,7 @@ Luôn chạy bước này trước để tránh lỗi thiếu Docker daemon/CLI 
 ```
 
 Script sẽ báo chi tiết và dừng sớm nếu phát hiện thiếu thành phần nào, sau đó bạn mới chuyển sang bước quick start ở dưới.
+
 
 ### 0. One-command quick start (full stack + generator + health checks)
 
