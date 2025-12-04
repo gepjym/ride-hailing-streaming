@@ -60,22 +60,17 @@ wait_for_topics(){
     local topic_list
     topic_list=$(docker exec -i kafka kafka-topics --bootstrap-server kafka:19092 --list 2>/dev/null || true)
     local missing=()
-    local not_ready=()
     for topic in "${required[@]}"; do
       if ! grep -Fxq "$topic" <<<"$topic_list"; then
         missing+=("$topic")
-        continue
-      fi
-      if ! docker exec -i kafka kafka-topics --bootstrap-server kafka:19092 --describe --topic "$topic" >/dev/null 2>&1; then
-        not_ready+=("$topic")
       fi
     done
-    if [[ ${#missing[@]} -eq 0 && ${#not_ready[@]} -eq 0 ]]; then
+    if [[ ${#missing[@]} -eq 0 ]]; then
       ok "Kafka topics sẵn sàng"
       return 0
     fi
     if (( $(date +%s) - start > timeout )); then
-      err "Timeout đợi Kafka topics: ${missing[*]} ${not_ready[*]}"
+      err "Timeout đợi Kafka topics: ${missing[*]}"
       docker exec -i kafka kafka-topics --bootstrap-server kafka:19092 --list || true
       return 1
     fi

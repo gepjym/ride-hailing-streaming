@@ -33,10 +33,6 @@ import org.apache.flink.util.OutputTag;
 import org.apache.flink.util.Collector;
 import org.elasticsearch.action.index.IndexRequest;
 import org.elasticsearch.client.Requests;
-import org.apache.http.auth.AuthScope;
-import org.apache.http.auth.UsernamePasswordCredentials;
-import org.apache.http.impl.client.BasicCredentialsProvider;
-import org.apache.http.client.CredentialsProvider;
 
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
@@ -54,23 +50,14 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.regex.Pattern;
 
 /** Realtime KPI: requests theo op='c'; status chuẩn hoá; bucket theo event-time; flags chống double-count. */
 public class RideHailingDataProcessor {
 
     // Kafka
-    static final String KAFKA_BOOTSTRAP = System.getenv().getOrDefault(
-            "KAFKA_BOOTSTRAP",
-            "kafka-1:19092");
+    static final String KAFKA_BOOTSTRAP = "kafka:19092";
     static final String TOPIC_BOOKING = "ridehailing.public.booking";
     static final String TOPIC_DRIVER_LOCATION = "ridehailing.public.driver_location";
-    static final String TOPIC_PASSENGER = "ridehailing.public.passenger";
-    static final String TOPIC_DRIVER = "ridehailing.public.driver";
-    static final Pattern TOPIC_BOOKING_PATTERN = Pattern.compile(Pattern.quote(TOPIC_BOOKING));
-    static final Pattern TOPIC_DRIVER_LOC_PATTERN = Pattern.compile(Pattern.quote(TOPIC_DRIVER_LOCATION));
-    static final Pattern TOPIC_PASSENGER_PATTERN = Pattern.compile(Pattern.quote(TOPIC_PASSENGER));
-    static final Pattern TOPIC_DRIVER_PATTERN = Pattern.compile(Pattern.quote(TOPIC_DRIVER));
 
     // Reporting DB
     static final String REPORTING_JDBC_URL  = "jdbc:postgresql://postgres-reporting:5432/reporting_db";
@@ -83,15 +70,12 @@ public class RideHailingDataProcessor {
     // Elasticsearch
     static final String ES_HOSTNAME = "elasticsearch";
     static final int    ES_PORT     = 9200;
-    static final String ES_USERNAME = System.getenv().getOrDefault("ES_USERNAME", "elastic");
-    static final String ES_PASSWORD = System.getenv().getOrDefault("ELASTIC_PASSWORD", "changeme123");
 
     static final long PASSENGER_CHURN_WINDOW_MS = Duration.ofDays(3).toMillis();
     static final long DRIVER_CHURN_WINDOW_MS    = Duration.ofDays(3).toMillis();
     static final Duration MAX_OUT_OF_ORDERNESS  = Duration.ofMinutes(5);
 
-    static final ZoneId REPORTING_ZONE_ID = ZoneId.of(
-            System.getenv().getOrDefault("REPORTING_TZ", "Asia/Ho_Chi_Minh"));
+    static final ZoneId REPORTING_ZONE_ID = ZoneId.of("Asia/Singapore");
 
     static final DateTimeFormatter ES_TIMESERIES_INDEX_FORMAT =
             DateTimeFormatter.ofPattern("yyyy.MM.dd").withZone(ZoneOffset.UTC);
@@ -206,8 +190,6 @@ public class RideHailingDataProcessor {
                 .setTopics(TOPIC_BOOKING)
                 .setGroupId("flink-booking-realtime")
                 .setStartingOffsets(bookingOffsets)
-                .setPartitionDiscoveryInterval(Duration.ofSeconds(15))
-                .setProperty("allow.auto.create.topics", "true")
                 .setValueOnlyDeserializer(new JsonNodeDeserializationSchema())
                 .build();
 
@@ -216,28 +198,22 @@ public class RideHailingDataProcessor {
                 .setTopics(TOPIC_DRIVER_LOCATION)
                 .setGroupId("flink-driverloc-realtime")
                 .setStartingOffsets(driverLocOffsets)
-                .setPartitionDiscoveryInterval(Duration.ofSeconds(15))
-                .setProperty("allow.auto.create.topics", "true")
                 .setValueOnlyDeserializer(new JsonNodeDeserializationSchema())
                 .build();
 
         KafkaSource<ObjectNode> passengerSource = KafkaSource.<ObjectNode>builder()
                 .setBootstrapServers(KAFKA_BOOTSTRAP)
-                .setTopics(TOPIC_PASSENGER)
+                .setTopics("ridehailing.public.passenger")
                 .setGroupId("flink-passenger-realtime")
                 .setStartingOffsets(passengerOffsets)
-                .setPartitionDiscoveryInterval(Duration.ofSeconds(15))
-                .setProperty("allow.auto.create.topics", "true")
                 .setValueOnlyDeserializer(new JsonNodeDeserializationSchema())
                 .build();
 
         KafkaSource<ObjectNode> driverSource = KafkaSource.<ObjectNode>builder()
                 .setBootstrapServers(KAFKA_BOOTSTRAP)
-                .setTopics(TOPIC_DRIVER)
+                .setTopics("ridehailing.public.driver")
                 .setGroupId("flink-driver-registrations")
                 .setStartingOffsets(driverOffsets)
-                .setPartitionDiscoveryInterval(Duration.ofSeconds(15))
-                .setProperty("allow.auto.create.topics", "true")
                 .setValueOnlyDeserializer(new JsonNodeDeserializationSchema())
                 .build();
 
@@ -424,7 +400,8 @@ public class RideHailingDataProcessor {
                         .build()
         ));
 
-        Elasticsearch7SinkBuilder<DriverLocDoc> latestSink = new Elasticsearch7SinkBuilder<DriverLocDoc>()
+        enrichedDriverLocs.sinkTo(
+            new Elasticsearch7SinkBuilder<DriverLocDoc>()
                 .setBulkFlushMaxActions(500)
                 .setHosts(new org.apache.http.HttpHost(ES_HOSTNAME, ES_PORT, "http"))
                 .setEmitter((ElasticsearchEmitter<DriverLocDoc>) (e, ctx, indexer) -> {
@@ -444,11 +421,11 @@ public class RideHailingDataProcessor {
                         .id(e.driverId)
                         .source(doc);
                     indexer.add(req);
-                });
-        configureElasticAuth(latestSink);
-        enrichedDriverLocs.sinkTo(latestSink.build());
+                }).build()
+        );
 
-        Elasticsearch7SinkBuilder<DriverLocDoc> timeseriesSink = new Elasticsearch7SinkBuilder<DriverLocDoc>()
+        enrichedDriverLocs.sinkTo(
+            new Elasticsearch7SinkBuilder<DriverLocDoc>()
                 .setBulkFlushMaxActions(1000)
                 .setHosts(new org.apache.http.HttpHost(ES_HOSTNAME, ES_PORT, "http"))
                 .setEmitter((ElasticsearchEmitter<DriverLocDoc>) (e, ctx, indexer) -> {
@@ -468,9 +445,8 @@ public class RideHailingDataProcessor {
                         .index(indexName)
                         .source(doc);
                     indexer.add(req);
-                });
-        configureElasticAuth(timeseriesSink);
-        enrichedDriverLocs.sinkTo(timeseriesSink.build());
+                }).build()
+        );
 
         bookingRouteSegments.addSink(JdbcSink.sink(
                 "INSERT INTO mart.booking_route_segments (" +
@@ -980,8 +956,7 @@ public class RideHailingDataProcessor {
             aggregateState.update(aggregate);
 
             MetricRecord result = copyMetric(value);
-            result.metricValue = recomputeMetricValue(value.metricName, aggregate.metricValue,
-                    aggregate.numeratorValue, aggregate.denominatorValue);
+            result.metricValue = aggregate.metricValue;
             result.numeratorValue = aggregate.numeratorValue;
             result.denominatorValue = aggregate.denominatorValue;
             result.sampleSize = aggregate.sampleSize;
@@ -1013,29 +988,8 @@ public class RideHailingDataProcessor {
     }
 
     // ==== Helpers ==== //
-    static double recomputeMetricValue(String metricName, double aggregated, double numerator, double denominator) {
-        if (metricName == null) {
-            return aggregated;
-        }
-        String name = metricName.toLowerCase(Locale.ROOT);
-        boolean isTotal = name.endsWith("_total");
-        boolean looksLikeRatio = name.contains("rate") || name.contains("_ratio") || name.contains("productivity");
-        boolean looksLikeAvgDuration = name.endsWith("_time");
-
-        if (!isTotal && denominator > 0d && (looksLikeRatio || looksLikeAvgDuration)) {
-            return numerator / denominator;
-        }
-        return aggregated;
-    }
     static String nvl(String s) { return s == null ? "" : s; }
     static double safe(Double d) { return d == null ? 0.0 : d; }
-    static <T> void configureElasticAuth(Elasticsearch7SinkBuilder<T> builder) {
-        CredentialsProvider credentialsProvider = new BasicCredentialsProvider();
-        credentialsProvider.setCredentials(AuthScope.ANY, new UsernamePasswordCredentials(ES_USERNAME, ES_PASSWORD));
-        builder.setRestClientFactory(restClientBuilder -> restClientBuilder
-                .setHttpClientConfigCallback(httpClientBuilder -> httpClientBuilder
-                        .setDefaultCredentialsProvider(credentialsProvider)));
-    }
     static OffsetsInitializer offsetsInitializer(String envVar, String defaultMode) {
         String configured = envVar != null ? System.getenv(envVar) : null;
         String resolved = (configured == null || configured.trim().isEmpty())
