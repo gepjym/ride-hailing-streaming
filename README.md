@@ -26,7 +26,7 @@ Tuỳ chọn:
 * `RUN_FAULT_TESTS=true` để chạy kịch bản resilience trong `tests/fault_tolerance_test.sh`.
 * `RUN_PERF_TESTS=true` để chạy `tests/performance_test.py` (tốn thời gian hơn).
 
-main
+
 
 ### 1. Kịch bản "Full redeploy + stream" (khuyến nghị)
 
