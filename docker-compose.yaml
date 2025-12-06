@@ -143,6 +143,9 @@ services:
       - REPORTING_DB_HOST=postgres-reporting
       - REPORTING_DB_PORT=5432
       - REPORTING_DB_URI=postgresql://user:password@postgres-reporting:5432/reporting_db
+      - SUPERSET_PORT=8088
+      - SUPERSET_WORKERS=4
+      - SUPERSET_TIMEOUT=120
     ports:
       - "8088:8088"
     depends_on:
