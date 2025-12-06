@@ -1,16 +1,16 @@
 {
   "request_order_count": {
     "passed": true,
-    "diff_pct": 0
+    "diff_pct": 0.0
   },
   "acceptance_rate_formula": {
-    "passed": false,
-    "max_diff": 446.1551225159174
+    "passed": true,
+    "max_diff": 0.0
   },
   "gsv_revenue_formula": {
     "passed": true,
     "max_gsv_diff": 0.0,
-    "max_rev_diff": 3.55e-06
+    "max_rev_diff": 0.0
   },
   "late_events": {
     "passed": true
