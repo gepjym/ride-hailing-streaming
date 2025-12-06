@@ -24,6 +24,7 @@ Tuỳ chọn:
 * `RUN_CORRECTNESS_TESTS=true` để chạy `tests/correctness_test.py` sau khi stack lên.
 * `RUN_FAULT_TESTS=true` để chạy kịch bản resilience trong `tests/fault_tolerance_test.sh`.
 * `RUN_PERF_TESTS=true` để chạy `tests/performance_test.py` (tốn thời gian hơn).
+* Sau khi stack chạy, có thể tự kích hoạt toàn bộ bộ kiểm thử bằng `bash scripts/run_tests.sh` (yêu cầu sẵn psycopg2 và docker-compose stack đang chạy).
 
 in
 ### 1. Kịch bản "Full redeploy + stream" (khuyến nghị)
@@ -127,6 +128,7 @@ psql -h localhost -p 5433 -U user -d reporting_db \
 * **Container `postgres-reporting` ở trạng thái Paused/Exited** → chạy `docker start postgres-reporting` (hoặc `docker unpause postgres-reporting`). Database được tạo mặc định là `reporting_db` trên cổng `5433`.
 * **Muốn reprocess lịch sử** → đặt `FLINK_BOOKING_OFFSET_MODE=EARLIEST` (và tương tự cho các source khác) trước khi `redeploy_all.sh` để Flink đọc lại toàn bộ log CDC.
 * **Điều chỉnh tốc độ generator** → sử dụng các tham số `--stream-*` (xem phần trợ giúp của script `generator/data_generator.py`).
+* **Superset không mở được tại http://localhost:8088** → kiểm tra `docker compose ps superset` và `docker compose logs -f superset` để xem tiến trình `bootstrap.sh` có chạy hết không. Script này sẽ tự chờ Postgres reporting, import `superset/database_config.yaml` và đảm bảo kết nối "Reporting DB" được tạo bằng `superset set_database_uri`; nếu container restart nhiều lần hãy xóa volume `superset_home` rồi chạy lại `docker compose up -d superset`.
 
 ## Còn thiếu gì để khớp 100% yêu cầu khóa luận
 
