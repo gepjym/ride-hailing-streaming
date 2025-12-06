@@ -1,10 +1,15 @@
 #!/bin/bash
 set -euo pipefail
 
-# Ensure reporting database is reachable before initializing Superset
+SUPERSET_HOME_DIR="${SUPERSET_HOME:-/app/superset_home}"
 REPORTING_HOST="${REPORTING_DB_HOST:-postgres-reporting}"
 REPORTING_PORT="${REPORTING_DB_PORT:-5432}"
 REPORTING_URI="${REPORTING_DB_URI:-postgresql://user:password@${REPORTING_HOST}:${REPORTING_PORT}/reporting_db}"
+DATABASE_CONFIG_PATH="${DATABASE_CONFIG_PATH:-${SUPERSET_HOME_DIR}/database_config.yaml}"
+
+echo "[Superset bootstrap] Ensuring Superset home exists at ${SUPERSET_HOME_DIR}"
+mkdir -p "${SUPERSET_HOME_DIR}"
+export SUPERSET_HOME="${SUPERSET_HOME_DIR}"
 
 echo "[Superset bootstrap] Waiting for reporting DB at ${REPORTING_HOST}:${REPORTING_PORT}..."
 for i in {1..30}; do
@@ -19,23 +24,27 @@ for i in {1..30}; do
   sleep 2
 done
 
-# Initialize Superset metadata and admin user
+echo "[Superset bootstrap] Upgrading metadata DB and creating admin user"
 superset db upgrade
 superset fab create-admin \
   --username admin \
   --firstname Admin \
   --lastname User \
   --email admin@moovtek.local \
-  --password admin123
+  --password admin123 || true
 superset init
 
-# Import the reporting database connection if the config is present
-if [[ -f /app/superset_home/database_config.yaml ]]; then
-  echo "[Superset bootstrap] Importing database connections from database_config.yaml"
-  superset import-databases -p /app/superset_home/database_config.yaml --overwrite
+echo "[Superset bootstrap] Registering reporting database connection"
+if [[ -f "${DATABASE_CONFIG_PATH}" ]]; then
+  echo "[Superset bootstrap] Importing database connections from ${DATABASE_CONFIG_PATH}"
+  superset import-databases -p "${DATABASE_CONFIG_PATH}" --overwrite || true
 else
-  echo "[Superset bootstrap] database_config.yaml not found; skipping database import"
+  echo "[Superset bootstrap] ${DATABASE_CONFIG_PATH} not found; skipping database import"
 fi
 
+superset set_database_uri \
+  --database_name "Reporting DB" \
+  --uri "${REPORTING_URI}" || true
+
 echo "[Superset bootstrap] Starting Superset server..."
-exec superset run -h 0.0.0.0 -p 8088 --with-threads --reload
+exec gunicorn -w 4 -k gevent --timeout 120 -b 0.0.0.0:8088 "superset.app:create_app()"
