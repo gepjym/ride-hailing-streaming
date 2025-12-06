@@ -1,0 +1,21 @@
+[
+  {
+    "scenario": "spike_20000_in_2min",
+    "start_time": "2025-12-05T03:50:31.299749",
+    "end_time": "2025-12-05T03:52:43.873583",
+    "events_sent": 22095,
+    "events_processed": 0,
+    "avg_latency_ms": 0.0,
+    "p95_latency_ms": 0.0,
+    "p99_latency_ms": 0.0,
+    "max_latency_ms": 0.0,
+    "throughput_eps": 166.6618467110184,
+    "cpu_usage_avg": 1.8066666666666666,
+    "memory_usage_mb": 5664.272,
+    "success": false,
+    "errors": [
+      "Timeout waiting for metric update after booking_code=perf-test-1",
+      "Timeout waiting for metric update after booking_code=perf-test-1"
+    ]
+  }
+]

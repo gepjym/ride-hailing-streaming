@@ -36,6 +36,7 @@ class TestResult:
 
 class PerformanceTester:
     def __init__(self):
+
         # Source DB (ingest path)
         self.source_conn = psycopg2.connect(
             host="localhost",
@@ -47,6 +48,12 @@ class PerformanceTester:
 
         # Reporting DB (stream outputs)
         self.reporting_conn = psycopg2.connect(
+
+
+
+        self.pg_conn = psycopg2.connect(
+
+
             host="localhost",
             port=5433,
             dbname="reporting_db",
@@ -54,10 +61,18 @@ class PerformanceTester:
             password="password",
         )
 
+
         self._ensure_booking_table()
 
     def _ensure_booking_table(self):
         """Ensure the booking table exists for synthetic inserts during perf tests."""
+
+
+        self._ensure_booking_table()
+
+    def _ensure_booking_table(self):
+        """Verify the booking table exists before running performance tests."""
+
         cursor = self.source_conn.cursor()
         cursor.execute(
             """
@@ -68,6 +83,7 @@ class PerformanceTester:
             """
         )
         exists = cursor.fetchone()[0] == 1
+
 
         if not exists:
             cursor.execute(
@@ -84,13 +100,33 @@ class PerformanceTester:
             )
             self.source_conn.commit()
 
+        if not exists:
+            raise SystemExit(
+                "The source database is missing the public.booking table. "
+                "Ensure the stack is running with initialized volumes (docker-compose up) "
+                "before executing performance tests."
+            )
+
+
+
     def measure_e2e_latency(self, booking_id: str, created_at: datetime) -> float:
         """Measure end-to-end latency from booking creation to reporting view."""
         max_wait = 30  # seconds
         start = time.time()
 
         while time.time() - start < max_wait:
+
             cursor = self.reporting_conn.cursor()
+
+
+            cursor = self.reporting_conn.cursor()
+
+
+            cursor = self.reporting_conn.cursor()
+
+            cursor = self.pg_conn.cursor()
+
+
             cursor.execute(
                 """
                 SELECT last_updated
@@ -160,7 +196,18 @@ class PerformanceTester:
     def _record_latency_sample(self, latencies: List[float], errors: List[str], sample_index: int):
         booking_id = f"perf-sample-{sample_index}"
         created_at = datetime.now()
+
         cursor = self.source_conn.cursor()
+
+
+        cursor = self.source_conn.cursor()
+
+
+        cursor = self.source_conn.cursor()
+
+        cursor = self.pg_conn.cursor()
+
+
         cursor.execute(
             """
             INSERT INTO public.booking 
@@ -171,7 +218,21 @@ class PerformanceTester:
             (booking_id, created_at, created_at),
         )
         actual_id, actual_created = cursor.fetchone()
+
         self.source_conn.commit()
+
+
+
+        self.source_conn.commit()
+
+
+
+        self.source_conn.commit()
+
+        self.pg_conn.commit()
+
+
+
 
         latency = self.measure_e2e_latency(str(actual_id), actual_created)
         if latency > 0:
