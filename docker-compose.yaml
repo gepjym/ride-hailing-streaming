@@ -138,11 +138,23 @@ services:
       - SUPERSET_SECRET_KEY=thisISaSECRET_1234567890
       - SUPERSET_LOAD_EXAMPLES=no
       - TALISMAN_ENABLED=False
+
+      - SUPERSET_ADMIN_USERNAME=admin
+      - SUPERSET_ADMIN_FIRSTNAME=Admin
+      - SUPERSET_ADMIN_LASTNAME=User
+      - SUPERSET_ADMIN_EMAIL=admin@moovtek.local
+      - SUPERSET_ADMIN_PASSWORD=admin123
+
+
       - SUPERSET_HOME=/app/superset_home
       - DATABASE_CONFIG_PATH=/app/superset_home/database_config.yaml
       - REPORTING_DB_HOST=postgres-reporting
       - REPORTING_DB_PORT=5432
       - REPORTING_DB_URI=postgresql://user:password@postgres-reporting:5432/reporting_db
+
+      - SUPERSET_DATABASE_URI=postgresql://user:password@postgres-reporting:5432/reporting_db
+
+
       - SUPERSET_PORT=8088
       - SUPERSET_WORKERS=4
       - SUPERSET_TIMEOUT=120

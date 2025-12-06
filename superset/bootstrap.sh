@@ -4,12 +4,26 @@ set -euo pipefail
 SUPERSET_HOME_DIR="${SUPERSET_HOME:-/app/superset_home}"
 REPORTING_HOST="${REPORTING_DB_HOST:-postgres-reporting}"
 REPORTING_PORT="${REPORTING_DB_PORT:-5432}"
+
+DATABASE_CONFIG_PATH="${DATABASE_CONFIG_PATH:-${SUPERSET_HOME_DIR}/database_config.yaml}"
+
 REPORTING_URI="${REPORTING_DB_URI:-postgresql://user:password@${REPORTING_HOST}:${REPORTING_PORT}/reporting_db}"
 DATABASE_CONFIG_PATH="${DATABASE_CONFIG_PATH:-${SUPERSET_HOME_DIR}/database_config.yaml}"
+
 
 SUPERSET_PORT="${SUPERSET_PORT:-8088}"
 SUPERSET_WORKERS="${SUPERSET_WORKERS:-4}"
 SUPERSET_TIMEOUT="${SUPERSET_TIMEOUT:-120}"
+
+
+ADMIN_USERNAME="${SUPERSET_ADMIN_USERNAME:-admin}"
+ADMIN_FIRSTNAME="${SUPERSET_ADMIN_FIRSTNAME:-Admin}"
+ADMIN_LASTNAME="${SUPERSET_ADMIN_LASTNAME:-User}"
+ADMIN_EMAIL="${SUPERSET_ADMIN_EMAIL:-admin@moovtek.local}"
+ADMIN_PASSWORD="${SUPERSET_ADMIN_PASSWORD:-admin123}"
+
+# Prefer SUPERSET_DATABASE_URI when provided, fall back to REPORTING_DB_URI for compatibility.
+DATABASE_URI="${SUPERSET_DATABASE_URI:-${REPORTING_DB_URI:-postgresql://user:password@${REPORTING_HOST}:${REPORTING_PORT}/reporting_db}}"
 
 
 echo "[Superset bootstrap] Ensuring Superset home exists at ${SUPERSET_HOME_DIR}"
@@ -39,6 +53,14 @@ done
 echo "[Superset bootstrap] Upgrading metadata DB and creating admin user"
 superset db upgrade
 superset fab create-admin \
+
+  --username "${ADMIN_USERNAME}" \
+  --firstname "${ADMIN_FIRSTNAME}" \
+  --lastname "${ADMIN_LASTNAME}" \
+  --email "${ADMIN_EMAIL}" \
+  --password "${ADMIN_PASSWORD}" \
+  --skip-if-exists
+
   --username admin \
   --firstname Admin \
   --lastname User \
@@ -48,6 +70,7 @@ superset fab create-admin \
   --skip-if-exists
 
   --password admin123 || true
+
 
 superset init
 
@@ -66,7 +89,11 @@ if [[ -f "${DATABASE_CONFIG_PATH}" ]]; then
 
   superset import-databases -p "${DATABASE_CONFIG_PATH}" --overwrite || echo "[Superset bootstrap] Database import failed (continuing so UI can still start)"
 
+
+  superset import-databases -p "${DATABASE_CONFIG_PATH}" --overwrite || echo "[Superset bootstrap] Database import failed (continuing so UI can still start)"
+
   superset import-databases -p "${DATABASE_CONFIG_PATH}" --overwrite || true
+
 
 
 
@@ -78,6 +105,11 @@ fi
 superset set_database_uri \
   --database_name "Reporting DB" \
 
+  --uri "${DATABASE_URI}" || echo "[Superset bootstrap] Database URI update failed (continuing so UI can still start)"
+
+echo "[Superset bootstrap] Starting Superset webserver on port ${SUPERSET_PORT}"
+
+
   --uri "${REPORTING_URI}" || echo "[Superset bootstrap] Database URI update failed (continuing so UI can still start)"
 
 echo "[Superset bootstrap] Starting Superset webserver on port ${SUPERSET_PORT}"
@@ -87,9 +119,13 @@ echo "[Superset bootstrap] Starting Superset webserver on port ${SUPERSET_PORT}"
 
 echo "[Superset bootstrap] Starting Superset server with gunicorn on port ${SUPERSET_PORT} (workers=${SUPERSET_WORKERS}, timeout=${SUPERSET_TIMEOUT})..."
 
+
 export FLASK_ENV=production
 export SUPERSET_ENV=production
 export FLASK_APP="superset.app:create_app()"
+
+
+exec superset run -h 0.0.0.0 -p "${SUPERSET_PORT}" --with-threads
 
 
 exec superset run -h 0.0.0.0 -p "${SUPERSET_PORT}" --with-threads
@@ -114,6 +150,7 @@ exec superset run -h 0.0.0.0 -p 8088 --with-threads --reload=false
 
 echo "[Superset bootstrap] Starting Superset server..."
 exec gunicorn -w 4 -k gevent --timeout 120 -b 0.0.0.0:8088 "superset.app:create_app()"
+
 
 
 
