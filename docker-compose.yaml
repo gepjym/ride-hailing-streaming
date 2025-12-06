@@ -132,11 +132,17 @@ services:
 
   superset:
     image: apache/superset:3.0.0
+    platform: linux/amd64
     container_name: superset
     environment:
       - SUPERSET_SECRET_KEY=thisISaSECRET_1234567890
       - SUPERSET_LOAD_EXAMPLES=no
       - TALISMAN_ENABLED=False
+      - SUPERSET_HOME=/app/superset_home
+      - DATABASE_CONFIG_PATH=/app/superset_home/database_config.yaml
+      - REPORTING_DB_HOST=postgres-reporting
+      - REPORTING_DB_PORT=5432
+      - REPORTING_DB_URI=postgresql://user:password@postgres-reporting:5432/reporting_db
     ports:
       - "8088:8088"
     depends_on:
@@ -145,23 +151,15 @@ services:
       - streaming_network
     volumes:
       - superset_home:/app/superset_home
-
       - ./superset/database_config.yaml:/app/superset_home/database_config.yaml:ro
       - ./superset/bootstrap.sh:/app/superset_home/bootstrap.sh:ro
     command: ["/bin/bash", "/app/superset_home/bootstrap.sh"]
-
-
-
-      - ./superset/database_config.yaml:/app/superset_home/database_config.yaml:ro
-
-    command: >
-      sh -c "
-      superset db upgrade &&
-      superset fab create-admin --username admin --firstname Admin --lastname User --email admin@moovtek.local --password admin123 &&
-      superset init &&
-      superset import-databases -p /app/superset_home/database_config.yaml --overwrite &&
-      superset run -h 0.0.0.0 -p 8088 --with-threads --reload
-      "
+    healthcheck:
+      test: ["CMD-SHELL", "python - <<'PY'\nimport urllib.request, sys\ntry:\n    urllib.request.urlopen('http://localhost:8088/health', timeout=5)\n    sys.exit(0)\nexcept Exception:\n    sys.exit(1)\nPY"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
 
 
 
