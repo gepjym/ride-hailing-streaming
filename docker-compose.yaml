@@ -1,3 +1,5 @@
+version: "3.8"
+
 services:
   postgres-source:
     image: postgis/postgis:13-3.3
@@ -128,6 +130,25 @@ services:
     ports: [ "5601:5601" ]
     networks: [ streaming_network ]
 
+  superset:
+    image: apache/superset:3.0.0
+    container_name: superset
+    environment:
+      - SUPERSET_SECRET_KEY=thisISaSECRET_1234567890
+      - SUPERSET_LOAD_EXAMPLES=no
+      - TALISMAN_ENABLED=False
+    ports:
+      - "8088:8088"
+    depends_on:
+      - postgres-reporting
+    networks:
+      - streaming_network
+    volumes:
+      - superset_home:/app/superset_home
+      - ./superset/database_config.yaml:/app/superset_home/database_config.yaml:ro
+      - ./superset/bootstrap.sh:/app/superset_home/bootstrap.sh:ro
+    command: ["/bin/bash", "/app/superset_home/bootstrap.sh"]
+
 networks:
   streaming_network:
     driver: bridge
@@ -136,3 +157,4 @@ volumes:
   postgres_source_data:
   postgres_reporting_data:
   elasticsearch_data:
+  superset_home:
