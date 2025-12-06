@@ -1,7 +1,7 @@
 # Ride-hailing Streaming (Postgres → Debezium → Kafka → Flink → Postgres/ES)
 
 ## Run
-
+main
 ### -1. Preflight (kiểm tra môi trường)
 
 Luôn chạy bước này trước để tránh lỗi thiếu Docker daemon/CLI hoặc đụng port (Kafka/Elasticsearch/Postgres/Superset/Kibana/Flink):
@@ -12,12 +12,12 @@ Luôn chạy bước này trước để tránh lỗi thiếu Docker daemon/CLI 
 
 Script sẽ báo chi tiết và dừng sớm nếu phát hiện thiếu thành phần nào, sau đó bạn mới chuyển sang bước quick start ở dưới.
 
-
+main
 
 ```bash
 export ELASTIC_PASSWORD=changeme123   # nếu bạn bật security cho Elasticsearch/Kibana
 RUN_GENERATOR=true GENERATOR_SECONDS=600 GENERATOR_VOLUME=small \
-
+main
 ```
 
 Tuỳ chọn:
@@ -26,7 +26,7 @@ Tuỳ chọn:
 * `RUN_FAULT_TESTS=true` để chạy kịch bản resilience trong `tests/fault_tolerance_test.sh`.
 * `RUN_PERF_TESTS=true` để chạy `tests/performance_test.py` (tốn thời gian hơn).
 
-
+main
 
 ### 1. Kịch bản "Full redeploy + stream" (khuyến nghị)
 

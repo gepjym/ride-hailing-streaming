@@ -143,11 +143,15 @@ services:
       - streaming_network
     volumes:
       - superset_home:/app/superset_home
+
+      - ./superset/database_config.yaml:/app/superset_home/database_config.yaml:ro
+
     command: >
       sh -c "
       superset db upgrade &&
       superset fab create-admin --username admin --firstname Admin --lastname User --email admin@moovtek.local --password admin123 &&
       superset init &&
+      superset import-databases -p /app/superset_home/database_config.yaml --overwrite &&
       superset run -h 0.0.0.0 -p 8088 --with-threads --reload
       "
 
