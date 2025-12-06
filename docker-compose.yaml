@@ -143,7 +143,9 @@ services:
       - streaming_network
     volumes:
       - superset_home:/app/superset_home
+
       - ./superset/database_config.yaml:/app/superset_home/database_config.yaml:ro
+
     command: >
       sh -c "
       superset db upgrade &&

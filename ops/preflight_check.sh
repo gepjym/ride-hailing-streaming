@@ -41,12 +41,19 @@ if [[ $PORT_CONFLICT -eq 1 ]]; then
 fi
 
 echo "[4] Checking available disk space (need >5GB)..."
+
 # Use POSIX-compatible df output (1K blocks) for Linux/macOS portability.
 # macOS supports -Pk; if that fails, fall back to -k.
 if ! FREE_KB=$(df -Pk / 2>/dev/null | awk 'NR==2 {print $4}'); then
   FREE_KB=$(df -k / | awk 'NR==2 {print $4}')
 fi
 FREE_GB=$(( FREE_KB / 1024 / 1024 ))
+
+# Use POSIX-compatible df output (1K blocks) for Linux/macOS portability
+FREE_KB=$(df -Pk / | awk 'NR==2 {print $4}')
+FREE_GB=$(( FREE_KB / 1024 / 1024 ))
+FREE_GB=$(df -BG --output=avail / | tail -n1 | tr -dc '0-9')
+
 if [[ ${FREE_GB:-0} -lt 5 ]]; then
   echo "❌ Not enough disk space: ${FREE_GB}GB available"
   exit 1
