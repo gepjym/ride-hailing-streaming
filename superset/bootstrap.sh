@@ -43,7 +43,12 @@ superset fab create-admin \
   --firstname Admin \
   --lastname User \
   --email admin@moovtek.local \
+
+  --password admin123 \
+  --skip-if-exists
+
   --password admin123 || true
+
 superset init
 
 echo "[Superset bootstrap] Registering reporting database connection"
@@ -58,7 +63,11 @@ if [[ -f "${DATABASE_CONFIG_PATH}" ]]; then
 
   superset import-databases -p "${DATABASE_CONFIG_PATH}" --overwrite || echo "[Superset bootstrap] Database import failed (continuing so UI can still start)"
 
+
+  superset import-databases -p "${DATABASE_CONFIG_PATH}" --overwrite || echo "[Superset bootstrap] Database import failed (continuing so UI can still start)"
+
   superset import-databases -p "${DATABASE_CONFIG_PATH}" --overwrite || true
+
 
 
 
@@ -71,10 +80,19 @@ superset set_database_uri \
 
   --uri "${REPORTING_URI}" || echo "[Superset bootstrap] Database URI update failed (continuing so UI can still start)"
 
+echo "[Superset bootstrap] Starting Superset webserver on port ${SUPERSET_PORT}"
+
+
+  --uri "${REPORTING_URI}" || echo "[Superset bootstrap] Database URI update failed (continuing so UI can still start)"
+
 echo "[Superset bootstrap] Starting Superset server with gunicorn on port ${SUPERSET_PORT} (workers=${SUPERSET_WORKERS}, timeout=${SUPERSET_TIMEOUT})..."
+
 export FLASK_ENV=production
 export SUPERSET_ENV=production
 export FLASK_APP="superset.app:create_app()"
+
+
+exec superset run -h 0.0.0.0 -p "${SUPERSET_PORT}" --with-threads
 
 exec gunicorn \
   --bind "0.0.0.0:${SUPERSET_PORT}" \
@@ -96,6 +114,7 @@ exec superset run -h 0.0.0.0 -p 8088 --with-threads --reload=false
 
 echo "[Superset bootstrap] Starting Superset server..."
 exec gunicorn -w 4 -k gevent --timeout 120 -b 0.0.0.0:8088 "superset.app:create_app()"
+
 
 
 
