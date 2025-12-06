@@ -12,15 +12,22 @@ mkdir -p "${SUPERSET_HOME_DIR}"
 export SUPERSET_HOME="${SUPERSET_HOME_DIR}"
 
 echo "[Superset bootstrap] Waiting for reporting DB at ${REPORTING_HOST}:${REPORTING_PORT}..."
-for i in {1..30}; do
-  if bash -c "</dev/tcp/${REPORTING_HOST}/${REPORTING_PORT}" >/dev/null 2>&1; then
+CHECK_DB_CMD=(pg_isready -h "${REPORTING_HOST}" -p "${REPORTING_PORT}")
+if ! command -v pg_isready >/dev/null 2>&1; then
+  CHECK_DB_CMD=(bash -c "</dev/tcp/${REPORTING_HOST}/${REPORTING_PORT}")
+fi
+
+for i in {1..60}; do
+  if "${CHECK_DB_CMD[@]}" >/dev/null 2>&1; then
     echo "[Superset bootstrap] Reporting DB is reachable."
     break
   fi
-  if [[ $i -eq 30 ]]; then
+
+  if [[ $i -eq 60 ]]; then
     echo "[Superset bootstrap] Reporting DB is not reachable after waiting. Exiting."
     exit 1
   fi
+
   sleep 2
 done
 
@@ -37,14 +44,25 @@ superset init
 echo "[Superset bootstrap] Registering reporting database connection"
 if [[ -f "${DATABASE_CONFIG_PATH}" ]]; then
   echo "[Superset bootstrap] Importing database connections from ${DATABASE_CONFIG_PATH}"
+
+  superset import-databases -p "${DATABASE_CONFIG_PATH}" --overwrite || echo "[Superset bootstrap] Database import failed (continuing so UI can still start)"
+
   superset import-databases -p "${DATABASE_CONFIG_PATH}" --overwrite || true
+
 else
   echo "[Superset bootstrap] ${DATABASE_CONFIG_PATH} not found; skipping database import"
 fi
 
 superset set_database_uri \
   --database_name "Reporting DB" \
+
+  --uri "${REPORTING_URI}" || echo "[Superset bootstrap] Database URI update failed (continuing so UI can still start)"
+
+echo "[Superset bootstrap] Starting Superset server..."
+exec superset run -h 0.0.0.0 -p 8088 --with-threads --reload=false
+
   --uri "${REPORTING_URI}" || true
 
 echo "[Superset bootstrap] Starting Superset server..."
 exec gunicorn -w 4 -k gevent --timeout 120 -b 0.0.0.0:8088 "superset.app:create_app()"
+
