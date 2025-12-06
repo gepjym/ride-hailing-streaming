@@ -132,6 +132,7 @@ services:
 
   superset:
     image: apache/superset:3.0.0
+    platform: linux/amd64
     container_name: superset
     environment:
       - SUPERSET_SECRET_KEY=thisISaSECRET_1234567890
