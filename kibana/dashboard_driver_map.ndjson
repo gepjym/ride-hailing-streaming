@@ -1,0 +1,1 @@
+{"id":"driver-location-dashboard","type":"dashboard","attributes":{"title":"Driver Location - Real-time Map","description":"Real-time visualization of driver locations and status","panelsJSON":"[]","optionsJSON":"{\"useMargins\":true,\"hidePanelTitles\":false}","timeRestore":true,"timeTo":"now","timeFrom":"now-15m"}}

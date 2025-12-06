@@ -128,6 +128,31 @@ services:
     ports: [ "5601:5601" ]
     networks: [ streaming_network ]
 
+  superset:
+    image: apache/superset:3.0.0
+    container_name: superset
+    environment:
+      - SUPERSET_SECRET_KEY=thisISaSECRET_1234567890
+      - SUPERSET_LOAD_EXAMPLES=no
+      - TALISMAN_ENABLED=False
+    ports:
+      - "8088:8088"
+    depends_on:
+      - postgres-reporting
+    networks:
+      - streaming_network
+    volumes:
+      - superset_home:/app/superset_home
+      - ./superset/database_config.yaml:/app/superset_home/database_config.yaml:ro
+    command: >
+      sh -c "
+      superset db upgrade &&
+      superset fab create-admin --username admin --firstname Admin --lastname User --email admin@moovtek.local --password admin123 &&
+      superset init &&
+      superset import-databases -p /app/superset_home/database_config.yaml --overwrite &&
+      superset run -h 0.0.0.0 -p 8088 --with-threads --reload
+      "
+
 networks:
   streaming_network:
     driver: bridge
@@ -136,3 +161,4 @@ volumes:
   postgres_source_data:
   postgres_reporting_data:
   elasticsearch_data:
+  superset_home:
