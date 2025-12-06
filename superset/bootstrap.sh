@@ -55,7 +55,11 @@ if [[ -f "${DATABASE_CONFIG_PATH}" ]]; then
 
   superset import-databases -p "${DATABASE_CONFIG_PATH}" --overwrite || echo "[Superset bootstrap] Database import failed (continuing so UI can still start)"
 
+
+  superset import-databases -p "${DATABASE_CONFIG_PATH}" --overwrite || echo "[Superset bootstrap] Database import failed (continuing so UI can still start)"
+
   superset import-databases -p "${DATABASE_CONFIG_PATH}" --overwrite || true
+
 
 
 else
@@ -82,6 +86,7 @@ exec gunicorn \
   "superset.app:create_app()"
 
 
+
   --uri "${REPORTING_URI}" || echo "[Superset bootstrap] Database URI update failed (continuing so UI can still start)"
 
 echo "[Superset bootstrap] Starting Superset server..."
@@ -91,5 +96,6 @@ exec superset run -h 0.0.0.0 -p 8088 --with-threads --reload=false
 
 echo "[Superset bootstrap] Starting Superset server..."
 exec gunicorn -w 4 -k gevent --timeout 120 -b 0.0.0.0:8088 "superset.app:create_app()"
+
 
 
