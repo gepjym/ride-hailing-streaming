@@ -36,6 +36,7 @@ class TestResult:
 
 class PerformanceTester:
     def __init__(self):
+
         # Source DB (ingest path)
         self.source_conn = psycopg2.connect(
             host="localhost",
@@ -47,12 +48,17 @@ class PerformanceTester:
 
         # Reporting DB (stream outputs)
         self.reporting_conn = psycopg2.connect(
+
+
+        self.pg_conn = psycopg2.connect(
+
             host="localhost",
             port=5433,
             dbname="reporting_db",
             user="user",
             password="password",
         )
+
 
         self._ensure_booking_table()
 
@@ -75,13 +81,21 @@ class PerformanceTester:
                 "before executing performance tests."
             )
 
+
     def measure_e2e_latency(self, booking_id: str, created_at: datetime) -> float:
         """Measure end-to-end latency from booking creation to reporting view."""
         max_wait = 30  # seconds
         start = time.time()
 
         while time.time() - start < max_wait:
+
             cursor = self.reporting_conn.cursor()
+
+
+            cursor = self.reporting_conn.cursor()
+
+            cursor = self.pg_conn.cursor()
+
             cursor.execute(
                 """
                 SELECT last_updated
@@ -151,7 +165,14 @@ class PerformanceTester:
     def _record_latency_sample(self, latencies: List[float], errors: List[str], sample_index: int):
         booking_id = f"perf-sample-{sample_index}"
         created_at = datetime.now()
+
         cursor = self.source_conn.cursor()
+
+
+        cursor = self.source_conn.cursor()
+
+        cursor = self.pg_conn.cursor()
+
         cursor.execute(
             """
             INSERT INTO public.booking 
@@ -162,7 +183,16 @@ class PerformanceTester:
             (booking_id, created_at, created_at),
         )
         actual_id, actual_created = cursor.fetchone()
+
         self.source_conn.commit()
+
+
+
+        self.source_conn.commit()
+
+        self.pg_conn.commit()
+
+
 
         latency = self.measure_e2e_latency(str(actual_id), actual_created)
         if latency > 0:
