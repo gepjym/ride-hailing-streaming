@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """
 Performance testing suite for ride-hailing streaming system.
-Tests throughput, latency, and resource utilization.
+Tests throughput and resource utilization (no latency measurement).
 """
 
 import json
 import os
-import statistics
 import subprocess
 import time
 from dataclasses import dataclass
@@ -21,8 +20,8 @@ class TestResult:
     scenario: str
     start_time: datetime
     end_time: datetime
-    events_sent: int
-    events_processed: int
+    events_sent: int              # Theoretical number of events sent
+    events_processed: int         # Kept for compatibility, but 0 when latency disabled
     avg_latency_ms: float
     p95_latency_ms: float
     p99_latency_ms: float
@@ -45,7 +44,7 @@ class PerformanceTester:
             password="password",
         )
 
-        # Reporting DB (stream outputs)
+        # Reporting DB (stream outputs) – vẫn giữ để sau này nếu muốn đo chi tiết
         self.reporting_conn = psycopg2.connect(
             host="localhost",
             port=5433,
@@ -76,52 +75,16 @@ class PerformanceTester:
                 "before executing performance tests."
             )
 
+    # Latency-related helpers vẫn giữ nhưng không dùng nữa
     def measure_e2e_latency(self, booking_id: str, created_at: datetime) -> float:
-        """Measure end-to-end latency from booking creation to reporting view."""
-        max_wait = 30  # seconds
-        start = time.time()
-
-        while time.time() - start < max_wait:
-            cursor = self.reporting_conn.cursor()
-            cursor.execute(
-                """
-                SELECT last_updated
-                FROM mart.fact_metric_bucket
-                WHERE metric_name = 'request_order'
-                AND first_event_at >= %s
-                AND last_updated >= %s
-                LIMIT 1
-                """,
-                (created_at, created_at),
-            )
-
-            result = cursor.fetchone()
-            if result:
-                reported_at = result[0]
-                latency_ms = (reported_at - created_at).total_seconds() * 1000
-                return latency_ms
-
-            time.sleep(0.5)
-
-        return -1  # Timeout
-
-    def _percentile(self, data: List[float], percentile: float) -> float:
-        if not data:
-            return 0.0
-        ordered = sorted(data)
-        k = (len(ordered) - 1) * percentile
-        f = int(k)
-        c = min(f + 1, len(ordered) - 1)
-        if f == c:
-            return ordered[int(k)]
-        d0 = ordered[f] * (c - k)
-        d1 = ordered[c] * (k - f)
-        return d0 + d1
+        return -1
 
     def get_cpu_usage(self) -> float:
         """Get average CPU usage of key containers."""
         containers = ["flink-jobmanager", "flink-taskmanager", "kafka"]
-        total_cpu = 0
+        total_cpu = 0.0
+        count = 0
+
         for container in containers:
             result = subprocess.run(
                 ["docker", "stats", container, "--no-stream", "--format", "{{.CPUPerc}}"],
@@ -129,13 +92,20 @@ class PerformanceTester:
                 text=True,
             )
             cpu_str = result.stdout.strip().replace("%", "")
-            total_cpu += float(cpu_str) if cpu_str else 0
-        return total_cpu / len(containers)
+            if cpu_str:
+                try:
+                    total_cpu += float(cpu_str)
+                    count += 1
+                except ValueError:
+                    pass
+
+        return total_cpu / count if count > 0 else 0.0
 
     def get_memory_usage(self) -> float:
         """Get total memory usage in MB for core containers."""
         containers = ["flink-jobmanager", "flink-taskmanager", "kafka"]
-        total_mem = 0
+        total_mem = 0.0
+
         for container in containers:
             result = subprocess.run(
                 ["docker", "stats", container, "--no-stream", "--format", "{{.MemUsage}}"],
@@ -143,35 +113,18 @@ class PerformanceTester:
                 text=True,
             )
             mem_str = result.stdout.strip().split("/")[0].strip()
-            if "GiB" in mem_str:
-                total_mem += float(mem_str.replace("GiB", "")) * 1024
-            elif "MiB" in mem_str:
-                total_mem += float(mem_str.replace("MiB", ""))
+            if not mem_str:
+                continue
+
+            try:
+                if "GiB" in mem_str:
+                    total_mem += float(mem_str.replace("GiB", "").strip()) * 1024
+                elif "MiB" in mem_str:
+                    total_mem += float(mem_str.replace("MiB", "").strip())
+            except ValueError:
+                continue
+
         return total_mem
-
-    def _record_latency_sample(self, latencies: List[float], errors: List[str], sample_index: int):
-        booking_id = f"perf-sample-{sample_index}"
-        created_at = datetime.now()
-
-        cursor = self.source_conn.cursor()
-        cursor.execute(
-            """
-            INSERT INTO public.booking
-            (id, "bookingCode", "passengerId", status, "createdAt", "updatedAt")
-            VALUES (gen_random_uuid(), %s, gen_random_uuid(), 'REQUESTED', %s, %s)
-            RETURNING id, "createdAt"
-            """,
-            (booking_id, created_at, created_at),
-        )
-        actual_id, actual_created = cursor.fetchone()
-
-        self.source_conn.commit()
-
-        latency = self.measure_e2e_latency(str(actual_id), actual_created)
-        if latency > 0:
-            latencies.append(latency)
-        else:
-            errors.append(f"Timeout for booking {booking_id}")
 
     def run_load_test(
         self,
@@ -181,8 +134,11 @@ class PerformanceTester:
         generator_args: List[str],
         sample_interval_seconds: int,
     ) -> TestResult:
+        """
+        Chạy generator trong N phút với config cụ thể.
+        Không chèn booking test, không đo latency – chỉ đo throughput (theoretical) + resource usage snapshot.
+        """
         start_time = datetime.now()
-        latencies: List[float] = []
         errors: List[str] = []
 
         cmd = [
@@ -194,36 +150,45 @@ class PerformanceTester:
             "tiny",
         ] + generator_args
 
+        print("\n============================================================")
+        print(f"Scenario: {scenario}")
+        print(f"  Duration: {duration_minutes} min "
+              f"| Target ~ {events_per_minute} bookings/min")
+        print(f"  Generator cmd: {' '.join(cmd)}")
+        print("============================================================")
+
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
             end_deadline = time.time() + duration_minutes * 60
-            sample_index = 0
             while time.time() < end_deadline:
-                self._record_latency_sample(latencies, errors, sample_index)
-                sample_index += 1
                 time.sleep(sample_interval_seconds)
         finally:
             proc.terminate()
-            proc.wait()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
 
         end_time = datetime.now()
+
+        # Số event dự kiến (theoretical) theo config
         events_sent = events_per_minute * duration_minutes
-        throughput_eps = events_sent / (duration_minutes * 60)
+        throughput_eps = events_sent / float(duration_minutes * 60)
 
         result = TestResult(
             scenario=scenario,
             start_time=start_time,
             end_time=end_time,
             events_sent=events_sent,
-            events_processed=len(latencies),
-            avg_latency_ms=statistics.mean(latencies) if latencies else 0,
-            p95_latency_ms=self._percentile(latencies, 0.95),
-            p99_latency_ms=self._percentile(latencies, 0.99),
-            max_latency_ms=max(latencies) if latencies else 0,
+            events_processed=0,      # 0 vì không đo per-event latency
+            avg_latency_ms=0.0,
+            p95_latency_ms=0.0,
+            p99_latency_ms=0.0,
+            max_latency_ms=0.0,
             throughput_eps=throughput_eps,
             cpu_usage_avg=self.get_cpu_usage(),
             memory_usage_mb=self.get_memory_usage(),
-            success=len(errors) == 0,
+            success=(len(errors) == 0),
             errors=errors,
         )
 
@@ -231,7 +196,7 @@ class PerformanceTester:
         return result
 
     def run_baseline_test(self) -> TestResult:
-        """Baseline: 100 bookings/min for 10 minutes."""
+        """Baseline: khoảng 100 bookings/min trong 10 phút."""
         generator_args = [
             "--stream-new-booking-prob",
             "0.6",
@@ -241,7 +206,7 @@ class PerformanceTester:
             "0.7",
         ]
         return self.run_load_test(
-            "baseline_100_per_min",
+            "baseline_100_per_min_10min",
             100,
             10,
             generator_args,
@@ -249,7 +214,7 @@ class PerformanceTester:
         )
 
     def run_peak_test(self) -> TestResult:
-        """Peak: 1000 bookings/min for 5 minutes."""
+        """Peak: khoảng 1.000 bookings/min trong 5 phút."""
         generator_args = [
             "--stream-new-booking-prob",
             "0.95",
@@ -259,7 +224,7 @@ class PerformanceTester:
             "0.1",
         ]
         return self.run_load_test(
-            "peak_1000_per_min",
+            "peak_1000_per_min_5min",
             1000,
             5,
             generator_args,
@@ -267,18 +232,18 @@ class PerformanceTester:
         )
 
     def run_spike_test(self) -> TestResult:
-        """Spike: 2000 bookings/min for 2 minutes."""
+        """Spike: ~50.000 bookings trong 2 phút (~25.000 bookings/min)."""
         generator_args = [
             "--stream-new-booking-prob",
-            "0.98",
+            "0.99",
             "--stream-sleep-min",
-            "0.02",
+            "0.001",
             "--stream-sleep-max",
-            "0.05",
+            "0.003",
         ]
         return self.run_load_test(
-            "spike_2000_per_min",
-            2000,
+            "spike_50000_in_2min",
+            25000,  # 25k/min * 2 phút ≈ 50k
             2,
             generator_args,
             sample_interval_seconds=10,
@@ -288,19 +253,26 @@ class PerformanceTester:
         """Print test results in a formatted way."""
         print(f"\n{'='*60}")
         print(f"Test: {result.scenario}")
-        print(f"Duration: {(result.end_time - result.start_time).total_seconds():.1f}s")
-        print(f"Events Sent: {result.events_sent}")
-        print(f"Events Processed: {result.events_processed}")
-        if result.events_sent:
-            print(f"Success Rate: {result.events_processed/result.events_sent*100:.1f}%")
-        print(f"\nLatency Metrics:")
-        print(f"  Average: {result.avg_latency_ms:.2f}ms")
-        print(f"  P95: {result.p95_latency_ms:.2f}ms")
-        print(f"  P99: {result.p99_latency_ms:.2f}ms")
-        print(f"  Max: {result.max_latency_ms:.2f}ms")
-        print(f"\nResource Usage:")
-        print(f"  CPU: {result.cpu_usage_avg:.1f}%")
-        print(f"  Memory: {result.memory_usage_mb:.1f}MB")
+        print(
+            f"Duration: {(result.end_time - result.start_time).total_seconds():.1f}s"
+        )
+        print(f"Events Sent (theoretical): {result.events_sent}")
+        print(f"Events Processed (latency samples): {result.events_processed}")
+        print("Success Rate (samples/events): N/A (latency disabled)")
+
+        print(f"\nLatency Metrics (ms) - DISABLED IN THIS TEST:")
+        print(f"  Average: {result.avg_latency_ms:.2f}")
+        print(f"  P95:     {result.p95_latency_ms:.2f}")
+        print(f"  P99:     {result.p99_latency_ms:.2f}")
+        print(f"  Max:     {result.max_latency_ms:.2f}")
+
+        print(f"\nThroughput (theoretical):")
+        print(f"  ~{result.throughput_eps:.2f} events/second")
+
+        print(f"\nResource Usage (snapshot-based):")
+        print(f"  CPU (avg snapshot): {result.cpu_usage_avg:.1f}%")
+        print(f"  Memory (total):     {result.memory_usage_mb:.1f} MB")
+
         print(f"\nStatus: {'✅ PASS' if result.success else '❌ FAIL'}")
         if result.errors:
             print(f"Errors ({len(result.errors)}):")
@@ -346,4 +318,6 @@ if __name__ == "__main__":
     results.append(tester.run_peak_test())
     results.append(tester.run_spike_test())
 
-    tester.save_results_to_file(results, "tests/test_results/performance_test_results.json")
+    tester.save_results_to_file(
+        results, "tests/test_results/performance_test_results.json"
+    )

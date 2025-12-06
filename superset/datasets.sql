@@ -33,7 +33,7 @@ AND last_updated >= NOW() - INTERVAL '5 minutes';
 -- Dataset 2: Hourly Trends (last 24 hours)
 CREATE OR REPLACE VIEW mart.dashboard_operations_hourly AS
 SELECT 
-    bucket_start,
+    bucket_hour,
     metric_name,
     service_type,
     service_tier,
@@ -42,7 +42,7 @@ SELECT
     numerator_value,
     denominator_value
 FROM mart.vw_metric_hourly
-WHERE bucket_start >= NOW() - INTERVAL '24 hours'
+WHERE bucket_hour >= NOW() - INTERVAL '24 hours'
 AND metric_name IN (
     'request_order',
     'accept_order',
@@ -63,15 +63,14 @@ WITH realtime_metrics AS (
     FROM mart.latest_metric_snapshot
     WHERE metric_name IN ('online_driver', 'busy_driver', 'net_driver_income')
 ),
-
 daily_metrics AS (
     SELECT 
-        bucket_start::date as date,
+        bucket_day::date AS date,
         metric_name,
         service_type,
         service_tier,
         area_code,
-        SUM(metric_value) as metric_value
+        SUM(metric_value) AS metric_value
     FROM mart.vw_metric_daily
     WHERE metric_name IN (
         'new_driver',
@@ -80,7 +79,7 @@ daily_metrics AS (
         'churn_driver',
         'productivity'
     )
-    AND bucket_start >= CURRENT_DATE - INTERVAL '90 days'
+    AND bucket_day >= CURRENT_DATE - INTERVAL '90 days'
     GROUP BY 1,2,3,4,5
 )
 SELECT * FROM realtime_metrics
@@ -91,18 +90,18 @@ SELECT
     service_tier,
     area_code,
     metric_value,
-    date::timestamp as last_updated
+    date::timestamp AS last_updated
 FROM daily_metrics;
 
 -- Passenger analytics dataset
 CREATE OR REPLACE VIEW mart.dashboard_passenger_analytics AS
 SELECT 
-    bucket_start::date as date,
+    bucket_day::date AS date,
     metric_name,
     cohort_key,
-    SUM(metric_value) as metric_value,
-    SUM(numerator_value) as numerator_value,
-    SUM(denominator_value) as denominator_value
+    SUM(metric_value) AS metric_value,
+    SUM(numerator_value) AS numerator_value,
+    SUM(denominator_value) AS denominator_value
 FROM mart.vw_metric_daily
 WHERE metric_name IN (
     'new_passenger',
@@ -111,5 +110,5 @@ WHERE metric_name IN (
     'churn_passenger',
     'return_passenger'
 )
-AND bucket_start >= CURRENT_DATE - INTERVAL '90 days'
+AND bucket_day >= CURRENT_DATE - INTERVAL '90 days'
 GROUP BY 1, 2, 3;

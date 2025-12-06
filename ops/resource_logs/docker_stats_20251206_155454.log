@@ -1,0 +1,6 @@
+CONTAINER ID   NAME                 CPU %     MEM USAGE / LIMIT     MEM %     NET I/O           BLOCK I/O         PIDS
+b95ef32018a2   flink-jobmanager     4.98%     1.355GiB / 7.653GiB   17.71%    84.2MB / 202MB    163MB / 234MB     143
+f6aba5b395d1   flink-taskmanager    11.31%    1.35GiB / 7.653GiB    17.64%    113MB / 78MB      89MB / 268MB      193
+41b0a9995f95   kafka                3.51%     623.3MiB / 7.653GiB   7.95%     9.59MB / 10.1MB   67.2MB / 9.51MB   85
+9fc727de391d   postgres-source      0.23%     122.9MiB / 7.653GiB   1.57%     3.23MB / 40.5MB   97.3MB / 83.6MB   10
+425794d6e5fc   postgres-reporting   0.29%     156.6MiB / 7.653GiB   2.00%     38MB / 3.8MB      253MB / 164MB     12
